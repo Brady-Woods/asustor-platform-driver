@@ -164,6 +164,13 @@ On devices where the front USB port is known (currently AS6704T, see `struct asu
 [asustor_main.c](asustor_main.c) for how to add others), the USB LED uses the `asustor-front-usb`
 trigger by default, which lights it while a USB device is plugged into the front port.
 
+On devices where the SATA ports of the drive bays are known (currently AS6704T, see
+`struct asustor_disk_bays` in [asustor_main.c](asustor_main.c) for how to add others), each
+`sataN:green:disk` LED uses its own `asustor-sataN` trigger by default: like with ASUSTOR's
+firmware, the LED is on while a disk is in the bay and blinks off when that disk is accessed.
+With the `disk_led_ready=0` module parameter, the LED is off and blinks on when the disk is accessed.
+On other devices, all disk LEDs use `disk-activity`, which blinks them all for activity of any disk.
+
 Note that currently the disk-related triggers (like `disk-activity`) do **not** work with NVME drives.
 That's a general limitation of the Linux kernel that is independent of this project.
 If this feature is ever implemented in the kernel, it will automatically work with this driver.
