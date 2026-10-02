@@ -708,13 +708,15 @@ static void asustor_usb_led_exit(void)
 
 // "asustor-sataN" LED triggers, see struct asustor_disk_bays
 
+// Writable at runtime: the poll work picks up a change within two polls.
 static bool disk_led_ready = true;
-module_param(disk_led_ready, bool, S_IRUSR | S_IRGRP | S_IROTH);
+module_param(disk_led_ready, bool, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(
 	disk_led_ready,
 	"Keep the disk LED of a bay on while a disk is in it and blink it off on "
 	"activity, like ASUSTOR's firmware (default). If false, the LED is off "
-	"and blinks on activity. Only for devices with known disk bays.");
+	"and blinks on activity. Can be changed at runtime. Only for devices with "
+	"known disk bays.");
 
 #define ASUSTOR_DISK_BAYS_POLL_MS 100
 #define ASUSTOR_DISK_BAYS_BLINK_MS 50
@@ -729,25 +731,27 @@ struct asustor_disk_bay {
 static struct asustor_disk_bay *asustor_disk_bays;
 static struct pci_dev *asustor_disk_bays_pdev;
 static struct delayed_work asustor_disk_bays_work;
+// disk_led_ready as last seen by the poll work, only used by the poll work
+static bool asustor_disk_bays_ready;
+// set by the poll work when disk_led_ready changed, see there
+static bool asustor_disk_bays_reapply;
 
 static enum led_brightness
-asustor_disk_bay_brightness(const struct asustor_disk_bay *bay)
+asustor_disk_bay_brightness(const struct asustor_disk_bay *bay, bool ready)
 {
-	return disk_led_ready && bay->present ? LED_FULL : LED_OFF;
+	return ready && READ_ONCE(bay->present) ? LED_FULL : LED_OFF;
 }
 
-static void asustor_disk_bay_blink(struct asustor_disk_bay *bay)
+static void asustor_disk_bay_blink(struct asustor_disk_bay *bay, bool ready)
 {
 	unsigned long delay_on  = ASUSTOR_DISK_BAYS_BLINK_MS;
 	unsigned long delay_off = ASUSTOR_DISK_BAYS_BLINK_MS;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0)
-	led_trigger_blink_oneshot(&bay->trigger, delay_on, delay_off,
-	                          disk_led_ready);
+	led_trigger_blink_oneshot(&bay->trigger, delay_on, delay_off, ready);
 #else
 	// before 6.5 the delays were passed as pointers
-	led_trigger_blink_oneshot(&bay->trigger, &delay_on, &delay_off,
-	                          disk_led_ready);
+	led_trigger_blink_oneshot(&bay->trigger, &delay_on, &delay_off, ready);
 #endif
 }
 
@@ -755,8 +759,9 @@ static int asustor_disk_bay_activate(struct led_classdev *led_cdev)
 {
 	struct asustor_disk_bay *bay = container_of(
 		led_cdev->trigger, struct asustor_disk_bay, trigger);
+	bool ready = READ_ONCE(disk_led_ready);
 
-	led_set_brightness(led_cdev, asustor_disk_bay_brightness(bay));
+	led_set_brightness(led_cdev, asustor_disk_bay_brightness(bay, ready));
 	return 0;
 }
 
@@ -797,7 +802,11 @@ static int asustor_disk_lookup_dev(struct device *dev, void *data)
 static void asustor_disk_bays_poll(struct work_struct *work)
 {
 	const struct asustor_disk_bays *bays = driver_data->disk_bays;
+	bool ready, changed;
 	int i;
+
+	ready   = READ_ONCE(disk_led_ready);
+	changed = ready != asustor_disk_bays_ready;
 
 	for (i = 0; i < bays->num_bays; i++) {
 		struct asustor_disk_bay *bay      = &asustor_disk_bays[i];
@@ -808,16 +817,27 @@ static void asustor_disk_bays_poll(struct work_struct *work)
 		device_for_each_child(&asustor_disk_bays_pdev->dev, &lookup,
 		                      asustor_disk_lookup_dev);
 
-		if (lookup.found != bay->present) {
-			bay->present = lookup.found;
+		if (changed) {
+			// disk_led_ready was changed: a running blink would
+			// end in the idle state of the old setting, so stop it
+			// (setting LED_OFF does) and set the new idle state in
+			// the next poll, once the blink is stopped
+			WRITE_ONCE(bay->present, lookup.found);
+			led_trigger_event(&bay->trigger, LED_OFF);
+		} else if (lookup.found != bay->present ||
+		           asustor_disk_bays_reapply) {
+			WRITE_ONCE(bay->present, lookup.found);
 			led_trigger_event(&bay->trigger,
-			                  asustor_disk_bay_brightness(bay));
+			                  asustor_disk_bay_brightness(bay,
+			                                              ready));
 		} else if (lookup.found && lookup.ios != bay->ios) {
 			// with disk_led_ready the LED is on, so blink it off
-			asustor_disk_bay_blink(bay);
+			asustor_disk_bay_blink(bay, ready);
 		}
 		bay->ios = lookup.ios;
 	}
+	asustor_disk_bays_ready   = ready;
+	asustor_disk_bays_reapply = changed;
 
 	schedule_delayed_work(&asustor_disk_bays_work,
 	                      msecs_to_jiffies(ASUSTOR_DISK_BAYS_POLL_MS));
@@ -862,6 +882,7 @@ static int __init asustor_disk_bays_init(void)
 		}
 	}
 
+	asustor_disk_bays_ready = READ_ONCE(disk_led_ready);
 	INIT_DELAYED_WORK(&asustor_disk_bays_work, asustor_disk_bays_poll);
 	schedule_delayed_work(&asustor_disk_bays_work, 0);
 	return 0;
