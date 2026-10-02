@@ -184,6 +184,8 @@ On devices where the SATA ports of the drive bays are known (currently AS6704T, 
 `sataN:green:disk` LED uses its own `asustor-sataN` trigger by default: like with ASUSTOR's
 firmware, the LED is on while a disk is in the bay and blinks off when that disk is accessed.
 With the `disk_led_ready=0` module parameter, the LED is off and blinks on when the disk is accessed.
+The parameter can also be changed at runtime, which takes effect within a fraction of a second:
+`echo 0 | sudo tee /sys/module/asustor/parameters/disk_led_ready` (`1` to switch back).
 On other devices, all disk LEDs use `disk-activity`, which blinks them all for activity of any disk.
 
 Note that currently the disk-related triggers (like `disk-activity`) do **not** work with NVME drives.
