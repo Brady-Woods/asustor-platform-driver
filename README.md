@@ -6,6 +6,32 @@ On many systems, ASUSTOR uses a mix of IT87 and CPU GPIOs to control leds and bu
 
 **WARNING:** Changing GPIO input/outputs (as done by this module) without knowledge of their effects can be dangerous and lead to instability, corrupted data or a broken system. **Use at your own risk.**
 
+## About this fork
+
+This is a fork of [mafredri/asustor-platform-driver](https://github.com/mafredri/asustor-platform-driver).
+Its `main` is upstream `main` plus three changes that have been submitted
+upstream but aren't merged yet. They're combined and tested together here
+because the hardware they're for needs all three at once.
+
+It runs an ASUSTOR AS6704T (LOCKERSTOR 4 Gen2) under TrueNAS SCALE, which
+doesn't ship this driver. The status daemon
+[truenas-asustor-chassisd](https://github.com/Brady-Woods/truenas-asustor-chassisd)
+drives the front panel through it and depends on these changes.
+
+| Change | Upstream PR | Branch here |
+|---|---|---|
+| Hardware LED blinking through the IT8625E's GP LED blink units, plus `asustor_gpio_it87` fixes (Simple I/O switches, re-selecting the GPIO LDN on every access, locking); removes the `gpled*` sysfs files | [#46](https://github.com/mafredri/asustor-platform-driver/pull/46) | `gpio-it87-hw-blink` |
+| `asustor-front-usb` LED trigger, so the front USB LED follows the front port | [#47](https://github.com/mafredri/asustor-platform-driver/pull/47) | `front-usb-led` |
+| Per-bay disk activity LED triggers (`asustor-sataN`) and the `disk_led_ready` parameter, writable at runtime | [#48](https://github.com/mafredri/asustor-platform-driver/pull/48) | `per-bay-disk-led` |
+
+There's also a `.gitignore` for out-of-tree build artifacts.
+
+Each change stays on its own branch for review upstream. The three PRs
+conflict with each other, so `main` (also kept as `combined-46-47-48`)
+resolves those conflicts once and is the version that's actually built and
+tested on the hardware. Once the PRs are merged upstream, this fork can go
+back to tracking upstream `main`.
+
 ## Dependencies
 
 **Note:** The following dependencies from the mainline linux kernel are required, if they're not included by your distribution you may need to compile them yourself (note that some modules are only required on specific ASUSTOR models):
