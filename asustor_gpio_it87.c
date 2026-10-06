@@ -256,10 +256,49 @@ static int it87_gpio_request(struct gpio_chip *chip, unsigned gpio_num)
 
 	it87_gpio_blink_unmap(it87_gpio, gpio_num);
 
-	/* clear output enable, setting the pin to input, as all the
-	 * newly-exported GPIO interfaces are set to input.
+	/*
+	 * BW: don't change the direction here (this used to clear the output
+	 * enable bit). Firmware leaves power rails like the LCD's driven as
+	 * outputs, and switching them to input on request cuts them until the
+	 * consumer sets the direction again. Only direction_input/output change
+	 * it, get_direction reports the current one.
 	 */
-	superio_clear_mask(mask, group + it87_gpio->output_base);
+
+	superio_exit();
+
+exit:
+	mutex_unlock(&it87_gpio->lock);
+	return rc;
+}
+
+/* BW: GPIO_LINE_DIRECTION_* were added in Linux 5.5, with these values */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 5, 0)
+#define GPIO_LINE_DIRECTION_IN	1
+#define GPIO_LINE_DIRECTION_OUT	0
+#endif
+
+/* BW: report the direction from the output enable bit */
+static int it87_gpio_get_direction(struct gpio_chip *chip, unsigned gpio_num)
+{
+	u8 mask, group;
+	int rc = 0;
+	struct it87_gpio *it87_gpio = gpiochip_get_data(chip);
+
+	mask = 1 << (gpio_num % 8);
+	group = (gpio_num / 8);
+
+	mutex_lock(&it87_gpio->lock);
+
+	rc = superio_enter();
+	if (rc)
+		goto exit;
+
+	superio_select(GPIO);
+
+	if (superio_inb(group + it87_gpio->output_base) & mask)
+		rc = GPIO_LINE_DIRECTION_OUT;
+	else
+		rc = GPIO_LINE_DIRECTION_IN;
 
 	superio_exit();
 
@@ -531,6 +570,7 @@ static const struct gpio_chip it87_template_chip = {
 	.label			= KBUILD_MODNAME,
 	.owner			= THIS_MODULE,
 	.request		= it87_gpio_request,
+	.get_direction		= it87_gpio_get_direction,
 	.get			= it87_gpio_get,
 	.direction_input	= it87_gpio_direction_in,
 	.set			= it87_gpio_set,
