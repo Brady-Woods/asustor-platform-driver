@@ -339,6 +339,9 @@ static char *led_pwm_name = "front_panel::brightness";
 static int temp_type[3];	/* temp1-3 */
 static int temp_source[6];	/* temp1-6 */
 
+/* Set all limits to "no limit" at probe, see it87_reset_limits */
+static bool reset_limits;
+
 /* Many IT87 constants specified below */
 
 /* Length of ISA address segment */
@@ -6745,6 +6748,53 @@ static void it87_setup_temps(struct it87_data *data)
 	}
 }
 
+/*
+ * Some BIOSes leave the voltage, temperature and fan limit registers at
+ * arbitrary values (e.g. a voltage minimum above its maximum), so the
+ * alarms of inputs that are fine are set. With reset_limits, all limits
+ * are set to "no limit" when the driver is loaded:
+ * - in0-in7: min = 0 V, max = full scale,
+ * - temperatures: min = -128, max = 127 degrees C,
+ * - fans: min = 0 RPM (the register value of a stopped fan),
+ * after which userspace can set real ones (e.g. with "sensors -s"). This is
+ * not done on resume, so that the limits set by userspace are kept.
+ */
+static void it87_reset_limits(struct device *dev, struct it87_data *data)
+{
+	int i;
+
+	for (i = 0; i < NUM_VIN_LIMIT; i++) {
+		if (!(data->has_in & BIT(i)))
+			continue;
+		data->write(data, IT87_REG_VIN_MIN(i), 0);
+		data->write(data, IT87_REG_VIN_MAX(i), 0xff);
+	}
+
+	for (i = 0; i < data->num_temp_limit; i++) {
+		if (!(data->has_temp & BIT(i)))
+			continue;
+		data->write(data, data->REG_TEMP_LOW[i], (u8)TEMP_TO_REG(-128000));
+		data->write(data, data->REG_TEMP_HIGH[i], TEMP_TO_REG(127000));
+	}
+
+	/* fan7 only exists in H2RAM, which has no limits */
+	for (i = 0; i < ARRAY_SIZE(IT87_REG_FAN_MIN); i++) {
+		if (!(data->has_fan & BIT(i)) || it87_h2ram_tach_channel(data, i))
+			continue;
+		if (has_16bit_fans(data)) {
+			data->write(data, data->REG_FAN_MIN[i],
+				    FAN16_TO_REG(0) & 0xff);
+			data->write(data, data->REG_FANX_MIN[i],
+				    FAN16_TO_REG(0) >> 8);
+		} else {
+			data->write(data, data->REG_FAN_MIN[i], FAN_TO_REG(0, 1));
+		}
+	}
+
+	data->valid = false;
+	dev_info(dev, "All limits reset (reset_limits)\n");
+}
+
 /* Called when we have found a new IT87. */
 static void it87_init_device(struct platform_device *pdev)
 {
@@ -6858,6 +6908,9 @@ static void it87_init_device(struct platform_device *pdev)
 
 	it87_check_temp_params(&pdev->dev, data);
 	it87_setup_temps(data);
+
+	if (reset_limits)
+		it87_reset_limits(&pdev->dev, data);
 
 	it87_start_monitoring(data);
 }
@@ -7982,6 +8035,10 @@ MODULE_PARM_DESC(temp_type,
 module_param_array(temp_source, int, NULL, 0444);
 MODULE_PARM_DESC(temp_source,
 		 "Input pin read by temp1,temp2,...: 1-3 = TMPIN1-3, 0 = as set by the BIOS (default); IT8625E, IT8655E, IT8665E only");
+
+module_param(reset_limits, bool, 0444);
+MODULE_PARM_DESC(reset_limits,
+		 "Set all voltage, temperature and fan limits to no limit when loading (default: off)");
 
 MODULE_LICENSE("GPL");
 MODULE_VERSION(IT87_DRIVER_VERSION);
