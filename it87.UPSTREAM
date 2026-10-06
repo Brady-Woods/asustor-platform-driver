@@ -1,0 +1,6 @@
+# Upstream of it87.c and compat.h, written by tools/sync-it87.sh.
+# Local changes are separate commits on top of the import commit.
+url=https://github.com/frankcrawford/it87
+base=bc06d3488439e5fcd725c1bdcfcac994d6d95cac
+extra=61c07701308aa8fb81b4de0aa4e8d39bbd83b008 PR #110
+version=v2.0-4-gbc06d34+61c0770
