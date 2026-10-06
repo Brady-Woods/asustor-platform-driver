@@ -314,8 +314,9 @@ Notes:
   or not sound at all.
 - The tone stops and the gate closes when `asustor` is unloaded and before a reboot or power off;
   on suspend the kernel stops the tone.
-- Not tested on hardware yet. GP75 and its polarity are from ASUSTOR's firmware, which drives it on
-  all its Jasper Lake devices and on AS66xx.
+- Tested on an AS6704T: audible, 2 kHz from the hrtimer. GP75 and its polarity are from ASUSTOR's
+  firmware, which drives it on all its Jasper Lake devices and on AS66xx; the other models are not
+  tested.
 
 ### Reset button
 
