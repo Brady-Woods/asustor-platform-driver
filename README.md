@@ -16,7 +16,7 @@ firmware (ADM) does on that hardware. The status daemon
 drives the front panel through it and needs this fork's `main`, v0.3 or later
 (`git clone https://github.com/Brady-Woods/asustor-platform-driver`).
 
-v0.3 is upstream `main` plus:
+v0.4 is upstream `main` plus (v0.4 added the `it87` sensor parameters):
 
 - Three changes submitted upstream but not merged yet, combined here because
   they conflict with each other (each also stays on its own branch for review):
