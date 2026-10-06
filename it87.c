@@ -335,6 +335,10 @@ static int led_pwm;
 static bool led_pwm_invert;
 static char *led_pwm_name = "front_panel::brightness";
 
+/* Temperature sensor setup applied at probe and resume, see it87_setup_temps */
+static int temp_type[3];	/* temp1-3 */
+static int temp_source[6];	/* temp1-6 */
+
 /* Many IT87 constants specified below */
 
 /* Length of ISA address segment */
@@ -1149,6 +1153,8 @@ struct it87_data {
 	u8 num_temp_limit;	/* Number of temperature limit registers */
 	u8 num_temp_offset;	/* Number of temperature offset registers */
 	u8 temp_src[4];		/* Up to 4 temperature source registers */
+	u8 temp_type_cfg[3];	/* temp_type parameter, 0 = leave as is */
+	s8 temp_src_cfg[NUM_TEMP]; /* temp_source as TEMP_SRC1 nibble, or -1 */
 	u8 sensor;		/* Register value (IT87_REG_TEMP_ENABLE) */
 	u8 extra;		/* Register value (IT87_REG_TEMP_EXTRA) */
 	u8 fan_div[NUM_FAN_DIV];/* Register encoding, shifted right */
@@ -3775,23 +3781,14 @@ static ssize_t show_temp_type(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%d\n", get_temp_type(data, sensor_attr->index));
 }
 
-static ssize_t set_temp_type(struct device *dev, struct device_attribute *attr,
-			     const char *buf, size_t count)
+/*
+ * Set the sensor type of temperature channel @nr (0-2) in IT87_REG_TEMP_ENABLE
+ * (and IT87_REG_TEMP_EXTRA for old PECI): 3 = thermal diode, 4 = thermistor,
+ * 6 = Intel PECI, 0 = disabled. Needs it87_lock().
+ */
+static int it87_write_temp_type(struct it87_data *data, int nr, long val)
 {
-	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
-	int nr = sensor_attr->index;
-
-	struct it87_data *data = dev_get_drvdata(dev);
-	long val;
 	u8 reg, extra;
-	int err;
-
-	if (kstrtol(buf, 10, &val) < 0)
-		return -EINVAL;
-
-	err = it87_lock(data);
-	if (err)
-		return err;
 
 	reg = data->read(data, IT87_REG_TEMP_ENABLE);
 	reg &= ~(1 << nr);
@@ -3801,12 +3798,6 @@ static ssize_t set_temp_type(struct device *dev, struct device_attribute *attr,
 	extra = data->read(data, IT87_REG_TEMP_EXTRA);
 	if (has_temp_old_peci(data, nr) && ((extra & 0x80) || val == 6))
 		extra &= 0x7f;
-	if (val == 2) {	/* backwards compatibility */
-		dev_warn(dev,
-			 "Sensor type 2 is deprecated, please use 4 instead\n");
-		val = 4;
-	}
-	/* 3 = thermal diode; 4 = thermistor; 6 = Intel PECI; 0 = disabled */
 	if (val == 3)
 		reg |= 1 << nr;
 	else if (val == 4)
@@ -3815,10 +3806,8 @@ static ssize_t set_temp_type(struct device *dev, struct device_attribute *attr,
 		reg |= (nr + 1) << 6;
 	else if (has_temp_old_peci(data, nr) && val == 6)
 		extra |= 0x80;
-	else if (val != 0) {
-		count = -EINVAL;
-		goto unlock;
-	}
+	else if (val != 0)
+		return -EINVAL;
 
 	data->sensor = reg;
 	data->extra = extra;
@@ -3826,9 +3815,35 @@ static ssize_t set_temp_type(struct device *dev, struct device_attribute *attr,
 	if (has_temp_old_peci(data, nr))
 		data->write(data, IT87_REG_TEMP_EXTRA, data->extra);
 	data->valid = false;	/* Force cache refresh */
-unlock:
+	return 0;
+}
+
+static ssize_t set_temp_type(struct device *dev, struct device_attribute *attr,
+			     const char *buf, size_t count)
+{
+	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
+	int nr = sensor_attr->index;
+
+	struct it87_data *data = dev_get_drvdata(dev);
+	long val;
+	int err;
+
+	if (kstrtol(buf, 10, &val) < 0)
+		return -EINVAL;
+
+	if (val == 2) {	/* backwards compatibility */
+		dev_warn(dev,
+			 "Sensor type 2 is deprecated, please use 4 instead\n");
+		val = 4;
+	}
+
+	err = it87_lock(data);
+	if (err)
+		return err;
+
+	err = it87_write_temp_type(data, nr, val);
 	it87_unlock(data);
-	return count;
+	return err ? err : count;
 }
 
 static SENSOR_DEVICE_ATTR(temp1_type, S_IRUGO | S_IWUSR, show_temp_type,
@@ -6635,6 +6650,101 @@ static void it87_start_monitoring(struct it87_data *data)
 		    | (update_vbat ? 0x41 : 0x01));
 }
 
+/*
+ * Temperature sensor setup for boards whose BIOS leaves channels unconfigured
+ * (they then read -128 degrees C), with the temp_type and temp_source
+ * parameters. Both are lists with one value per channel, starting at temp1;
+ * 0 (the default) leaves a channel as the BIOS set it.
+ *
+ * temp_type: the sensor type of temp1-3 in IT87_REG_TEMP_ENABLE, with the
+ * values of the tempN_type attribute: 3 = thermal diode, 4 = thermistor,
+ * 6 = Intel PECI (on chips with PECI).
+ *
+ * temp_source: on chips with temperature source registers that are decoded
+ * like the IT8665E's (IT87_REG_TEMP_SRC1, one nibble per channel), the input
+ * pin a channel reads: 1-3 = TMPIN1-3 (nibble 0-2). The other sources (PECI,
+ * AMDTSI, ...) also depend on IT87_REG_TEMP_SRC2 and can't be set here.
+ *
+ * Example: the ASUSTOR AS6704T (IT8625E) has a thermal diode on TMPIN2 that
+ * ASUSTOR's firmware reads as the system temperature, after writing 0x10 to
+ * register 0x21d (temp2 nibble = 1, temp1 nibble = 0) and setting bit 1 of
+ * IT87_REG_TEMP_ENABLE: temp_type=0,3,0 temp_source=0,2,0.
+ *
+ * The parameters apply to every chip the driver finds. They are checked once
+ * at probe; the setup is applied at probe, before the hwmon device is
+ * registered (tempN_type only exists for channels with a type), and again on
+ * resume.
+ */
+static bool it87_has_tmpin_sources(const struct it87_data *data)
+{
+	return has_bank_sel(data) &&
+	       (data->type == it8625 || data->type == it8655 ||
+		data->type == it8665);
+}
+
+static void it87_check_temp_params(struct device *dev, struct it87_data *data)
+{
+	int i, val;
+
+	for (i = 0; i < ARRAY_SIZE(temp_type); i++) {
+		val = temp_type[i];
+		if (!val)
+			continue;
+		if (val == 3 || val == 4 ||
+		    (val == 6 && (has_temp_peci(data, i) ||
+				  has_temp_old_peci(data, i)))) {
+			data->temp_type_cfg[i] = val;
+			dev_info(dev, "temp%d: sensor type %d\n", i + 1, val);
+		} else {
+			dev_warn(dev, "temp_type: temp%d can't be type %d\n",
+				 i + 1, val);
+		}
+	}
+
+	BUILD_BUG_ON(ARRAY_SIZE(temp_source) > NUM_TEMP);
+	for (i = 0; i < NUM_TEMP; i++)
+		data->temp_src_cfg[i] = -1;
+	for (i = 0; i < ARRAY_SIZE(temp_source); i++) {
+		val = temp_source[i];
+		if (!val)
+			continue;
+		if (!it87_has_tmpin_sources(data)) {
+			dev_warn(dev, "temp_source: not supported on this chip\n");
+			break;
+		}
+		if (val < 1 || val > 3) {
+			dev_warn(dev, "temp_source: temp%d can't read TMPIN%d\n",
+				 i + 1, val);
+			continue;
+		}
+		data->temp_src_cfg[i] = val - 1;
+		dev_info(dev, "temp%d: source TMPIN%d\n", i + 1, val);
+	}
+}
+
+/* Apply the checked temp_type/temp_source setup; needs it87_lock() on resume */
+static void it87_setup_temps(struct it87_data *data)
+{
+	int i, shift;
+	u8 val;
+
+	for (i = 0; i < NUM_TEMP; i++) {
+		if (data->temp_src_cfg[i] < 0)
+			continue;
+		shift = (i % 2) * 4;
+		val = data->read(data, IT87_REG_TEMP_SRC1[i / 2]);
+		val &= ~(0x0f << shift);
+		val |= data->temp_src_cfg[i] << shift;
+		data->write(data, IT87_REG_TEMP_SRC1[i / 2], val);
+		data->temp_src[i / 2] = val;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(data->temp_type_cfg); i++) {
+		if (data->temp_type_cfg[i])
+			it87_write_temp_type(data, i, data->temp_type_cfg[i]);
+	}
+}
+
 /* Called when we have found a new IT87. */
 static void it87_init_device(struct platform_device *pdev)
 {
@@ -6675,7 +6785,8 @@ static void it87_init_device(struct platform_device *pdev)
 	 * Temperature channels are not forcibly enabled, as they can be
 	 * set to two different sensor types and we can't guess which one
 	 * is correct for a given system. These channels can be enabled at
-	 * run-time through the temp{1-3}_type sysfs accessors if needed.
+	 * run-time through the temp{1-3}_type sysfs accessors if needed, or
+	 * with the temp_type parameter (see it87_setup_temps()).
 	 */
 
 	it87_check_voltage_monitors_reset(data);
@@ -6744,6 +6855,9 @@ static void it87_init_device(struct platform_device *pdev)
 				data->read(data, IT87_REG_TEMP_SRC1[i]);
 		data->temp_src[3] = data->read(data, IT87_REG_TEMP_SRC2);
 	}
+
+	it87_check_temp_params(&pdev->dev, data);
+	it87_setup_temps(data);
 
 	it87_start_monitoring(data);
 }
@@ -7400,6 +7514,7 @@ static int it87_resume(struct device *dev)
 	it87_check_voltage_monitors_reset(data);
 	it87_check_tachometers_reset(pdev);
 	it87_check_tachometers_16bit_mode(pdev);
+	it87_setup_temps(data);
 
 	/* Only a sane resume that reached this point retakes software ownership. */
 	if (data->suspend_defaults_restored && pwm_safe) {
@@ -7860,6 +7975,13 @@ MODULE_PARM_DESC(led_pwm_invert,
 module_param(led_pwm_name, charp, 0444);
 MODULE_PARM_DESC(led_pwm_name,
 		 "led_pwm: LED name (default: front_panel::brightness)");
+
+module_param_array(temp_type, int, NULL, 0444);
+MODULE_PARM_DESC(temp_type,
+		 "Sensor type of temp1,temp2,temp3: 3 = thermal diode, 4 = thermistor, 6 = PECI, 0 = as set by the BIOS (default)");
+module_param_array(temp_source, int, NULL, 0444);
+MODULE_PARM_DESC(temp_source,
+		 "Input pin read by temp1,temp2,...: 1-3 = TMPIN1-3, 0 = as set by the BIOS (default); IT8625E, IT8655E, IT8665E only");
 
 MODULE_LICENSE("GPL");
 MODULE_VERSION(IT87_DRIVER_VERSION);
