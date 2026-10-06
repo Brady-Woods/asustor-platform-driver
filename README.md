@@ -13,10 +13,12 @@ It runs an ASUSTOR AS6704T (LOCKERSTOR 4 Gen2) under TrueNAS SCALE, which
 doesn't ship this driver, and brings the driver closer to what ASUSTOR's own
 firmware (ADM) does on that hardware. The status daemon
 [truenas-asustor-chassisd](https://github.com/Brady-Woods/truenas-asustor-chassisd)
-drives the front panel through it and needs this fork's `main`, v0.3 or later
+drives the front panel through it and needs this fork's `main`, v0.3.0 or later
 (`git clone https://github.com/Brady-Woods/asustor-platform-driver`).
+What changed in each release is in the [changelog](CHANGELOG.md); bug reports and
+pull requests are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-v0.4 is upstream `main` plus (v0.4 added the `it87` sensor parameters):
+v0.4.0 is upstream `main` plus (v0.4.0 added the `it87` sensor parameters):
 
 - Three changes submitted upstream but not merged yet, combined here because
   they conflict with each other (each also stays on its own branch for review):
