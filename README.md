@@ -279,6 +279,19 @@ root can write them, e.g. `echo last | sudo tee /sys/devices/platform/asustor/ac
 firmware, not from a datasheet. The BIOS may set them again from its own setup when booting, so
 a written value might only last until the next boot (not verified).
 
+### GPIO pin configuration (IT8625E)
+
+The GPIO lookup tables assume that the IT8625E pins they use are in GPIO function and not
+inverted. ASUSTOR's firmware sets them like that, and so does the BIOS on AS6704T, so
+`asustor-gpio-it87` doesn't change them. If a pin is configured differently when it's requested,
+it logs a warning (once per pin) with the register and its value. With the module parameter
+`fix_pin_config=1`, it instead sets the pin like ASUSTOR's firmware (GPIO function, if the pin's
+pin mux bit is known, and non-inverted polarity) and logs each change. Pull-ups and the extra
+setup ASUSTOR's firmware does for GP7x/GP8x pins are not changed.
+
+With debugfs, `sudo cat /sys/kernel/debug/asustor_gpio_it87/regs` shows the pin configuration
+registers (read-only).
+
 ### `it87` and PWM polarity
 
 This project includes a patched version of the `it87` module that is part of mainline kernel (`asustor-it87`). It skips PWM sanity checks for the fan because ASUSTOR firmware correctly initializes fans in active low polarity and can be used straight with `fancontrol` or similar tools.

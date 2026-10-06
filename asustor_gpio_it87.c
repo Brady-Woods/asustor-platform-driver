@@ -20,6 +20,9 @@
 #include <linux/ioport.h>
 #include <linux/slab.h>
 #include <linux/mutex.h>
+#include <linux/bitops.h>
+#include <linux/debugfs.h>
+#include <linux/seq_file.h>
 #include <linux/leds.h>
 #include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
@@ -97,6 +100,47 @@ static const struct it87_gpio_blink_mode it8625_blink_modes[] = {
 	{ 4000, 4000, 0xc0 },
 };
 
+/*
+ * BW: IT8625E pin configuration (LDN 7), as ASUSTOR's firmware sets it for
+ * every pin it drives (It87_Set_Gpio in libgeneraldrv, ADM 5.1):
+ * - pin mux, 0x25-0x2c: bit set = GPIO function. Which register and bit
+ *   belong to a pin is irregular; only the pins in it8625_pin_mux are known.
+ *   The bit is the pin's bit in its group, as in ADM's table.
+ * - polarity, 0xb0 + group (groups 1-6): bit set = inverted. ADM clears it.
+ * - internal pull-up, 0xb8 + group (groups 1-6): ADM sets it.
+ * ADM's table has none of these for groups 7 and 8. Before driving a pin of
+ * group 8, ADM writes 0 to LDN 3's activate register (0x30) and sets bit 7
+ * of 0x2c; for group 7, it writes 0 to LDN 3's 0x30 and 0x20 to 0xe9.
+ */
+#define IT87_GPIO_POLARITY_BASE		0xb0
+#define IT87_GPIO_PULLUP_BASE		0xb8
+#define IT87_GPIO_PIN_MUX_BASE		0x25
+#define IT87_GPIO_PIN_MUX_SIZE		8
+#define IT87_LDN3			0x03
+#define IT87_LDN_ACTIVATE		0x30
+
+/**
+ * struct it87_gpio_pin_mux - pin mux register of a line
+ * @line: GPIO line, (group - 1) * 8 + bit
+ * @reg: pin mux register (LDN 7); the line's bit set = GPIO function
+ */
+struct it87_gpio_pin_mux {
+	u8 line;
+	u8 reg;
+};
+
+/* BW: the IT8625E pins whose pin mux bit is in ASUSTOR's firmware */
+static const struct it87_gpio_pin_mux it8625_pin_mux[] = {
+	{  8, 0x26 },	/* GP20 */
+	{ 10, 0x26 },	/* GP22 */
+	{ 20, 0x27 },	/* GP34 */
+	{ 21, 0x27 },	/* GP35 */
+	{ 27, 0x28 },	/* GP43 */
+	{ 31, 0x28 },	/* GP47 */
+	{ 32, 0x29 },	/* GP50 */
+	{ 44, 0x29 },	/* GP64 */
+};
+
 /**
  * struct it87_gpio - it87-specific GPIO chip
  * @chip: the underlying gpio_chip structure
@@ -111,6 +155,11 @@ static const struct it87_gpio_blink_mode it8625_blink_modes[] = {
  *	same status all time.
  * @blink_modes: hardware blink modes, NULL if blinking is not supported
  * @num_blink_modes: number of entries in @blink_modes
+ * @pin_mux: lines with a known pin mux bit, NULL if the pin configuration
+ *	isn't known for this chip
+ * @num_pin_mux: number of entries in @pin_mux
+ * @polarity_size: number of groups with a polarity register
+ * @pin_config_warned: lines whose pin configuration was warned about
  */
 struct it87_gpio {
 	struct gpio_chip chip;
@@ -122,7 +171,18 @@ struct it87_gpio {
 	u8 simple_size;
 	const struct it87_gpio_blink_mode *blink_modes;
 	unsigned int num_blink_modes;
+	const struct it87_gpio_pin_mux *pin_mux;
+	unsigned int num_pin_mux;
+	u8 polarity_size;
+	DECLARE_BITMAP(pin_config_warned, 64);
 };
+
+static bool fix_pin_config;
+module_param(fix_pin_config, bool, 0444);
+MODULE_PARM_DESC(fix_pin_config,
+	"IT8625E: when a line is requested, set its pin to GPIO function and "
+	"non-inverted polarity like ASUSTOR's firmware does, instead of only "
+	"warning if it isn't (default: false)");
 
 /*
  * BW: a mutex instead of a spinlock, because superio_enter() may sleep in
@@ -230,6 +290,80 @@ static void it87_gpio_blink_unmap(struct it87_gpio *it87_gpio,
 	}
 }
 
+/*
+ * BW: the lookup tables in asustor.ko assume that the pins are in GPIO
+ * function and not inverted, which is how ASUSTOR's firmware sets the pins it
+ * drives. Their BIOS leaves the pins like this as well on AS6704T, so the
+ * driver doesn't change them by default, but warns (once per line) if a pin
+ * differs. With fix_pin_config, it sets the pin like ASUSTOR's firmware does
+ * instead (if an output was inverted, its level flips until the consumer
+ * sets it, which e.g. leds-gpio does right after the request). It doesn't
+ * change:
+ * - the pull-ups: ADM only enables them for the pins it drives, while inputs
+ *   like buttons rely on the board's pull-ups.
+ * - the LDN 3 deactivation and the 0x2c/0xe9 writes for groups 7 and 8:
+ *   deactivating LDN 3 disables a whole logical device, which is out of scope
+ *   here, and those groups work as GPIOs with the BIOS settings on AS6704T.
+ * Must be called in a superio_enter() session with the GPIO LDN selected.
+ */
+static void it87_gpio_check_pin_config(struct it87_gpio *it87_gpio,
+				       unsigned gpio_num)
+{
+	u8 mask = 1 << (gpio_num % 8);
+	u8 group = gpio_num / 8;
+	bool warn = !fix_pin_config &&
+		    !test_bit(gpio_num, it87_gpio->pin_config_warned);
+	bool warned = false;
+	unsigned int i;
+	u8 reg, val;
+
+	if (!it87_gpio->pin_mux)
+		return;
+
+	for (i = 0; i < it87_gpio->num_pin_mux; i++) {
+		if (it87_gpio->pin_mux[i].line != gpio_num)
+			continue;
+
+		reg = it87_gpio->pin_mux[i].reg;
+		val = superio_inb(reg);
+		if (val & mask)
+			break;
+
+		if (fix_pin_config) {
+			superio_outb(val | mask, reg);
+			pr_info("it87_gp%u%u: set the pin to GPIO function (pin mux register 0x%02x: 0x%02x -> 0x%02x)\n",
+				group + 1, gpio_num % 8, reg, val, val | mask);
+		} else if (warn) {
+			pr_warn("it87_gp%u%u: pin is not in GPIO function (pin mux register 0x%02x = 0x%02x, bit %u clear), but the asustor lookup tables assume it is; see fix_pin_config\n",
+				group + 1, gpio_num % 8, reg, val,
+				gpio_num % 8);
+			warned = true;
+		}
+		break;
+	}
+
+	if (group < it87_gpio->polarity_size) {
+		reg = IT87_GPIO_POLARITY_BASE + group;
+		val = superio_inb(reg);
+		if (val & mask) {
+			if (fix_pin_config) {
+				superio_outb(val & ~mask, reg);
+				pr_info("it87_gp%u%u: set the pin to non-inverted polarity (polarity register 0x%02x: 0x%02x -> 0x%02x)\n",
+					group + 1, gpio_num % 8, reg, val,
+					val & ~mask);
+			} else if (warn) {
+				pr_warn("it87_gp%u%u: pin has inverted polarity (polarity register 0x%02x = 0x%02x, bit %u set), but the asustor lookup tables assume non-inverted pins; see fix_pin_config\n",
+					group + 1, gpio_num % 8, reg, val,
+					gpio_num % 8);
+				warned = true;
+			}
+		}
+	}
+
+	if (warned)
+		set_bit(gpio_num, it87_gpio->pin_config_warned);
+}
+
 static int it87_gpio_request(struct gpio_chip *chip, unsigned gpio_num)
 {
 	u8 mask, group;
@@ -247,6 +381,9 @@ static int it87_gpio_request(struct gpio_chip *chip, unsigned gpio_num)
 
 	/* BW: the it87 hwmon driver may have selected another LDN */
 	superio_select(GPIO);
+
+	/* BW: pin mux and polarity first, in the same order as ADM */
+	it87_gpio_check_pin_config(it87_gpio, gpio_num);
 
 	/* not all the IT87xx chips support Simple I/O and not all of
 	 * them allow all the lines to be set/unset to Simple I/O.
@@ -566,6 +703,94 @@ int it87_gpio_led_blink_set(struct gpio_desc *desc, int state,
 }
 EXPORT_SYMBOL_GPL(it87_gpio_led_blink_set);
 
+#ifdef CONFIG_DEBUG_FS
+/*
+ * BW: /sys/kernel/debug/asustor_gpio_it87/regs (IT8625E only): the pin
+ * configuration registers, see it87_gpio_check_pin_config(). Read-only, and
+ * read in one Super I/O session.
+ */
+static int it87_gpio_regs_show(struct seq_file *s, void *unused)
+{
+	struct it87_gpio *it87_gpio = s->private;
+	u8 mux[IT87_GPIO_PIN_MUX_SIZE], polarity[8], pullup[8], simple[8];
+	u8 output[8], blink[4], e9, ldn3_act;
+	int rc, i, ldn;
+
+	mutex_lock(&it87_gpio->lock);
+
+	rc = superio_enter();
+	if (rc)
+		goto exit;
+
+	ldn = superio_inb(LDNREG);
+	superio_select(GPIO);
+	for (i = 0; i < IT87_GPIO_PIN_MUX_SIZE; i++)
+		mux[i] = superio_inb(IT87_GPIO_PIN_MUX_BASE + i);
+	for (i = 0; i < 8; i++) {
+		polarity[i] = superio_inb(IT87_GPIO_POLARITY_BASE + i);
+		pullup[i] = superio_inb(IT87_GPIO_PULLUP_BASE + i);
+		simple[i] = superio_inb(it87_gpio->simple_base + i);
+		output[i] = superio_inb(it87_gpio->output_base + i);
+	}
+	e9 = superio_inb(0xe9);
+	for (i = 0; i < IT87_GPIO_BLINK_UNITS; i++) {
+		blink[2 * i] = superio_inb(it87_gpio_blink_pin_map_reg[i]);
+		blink[2 * i + 1] = superio_inb(it87_gpio_blink_ctrl_reg[i]);
+	}
+	superio_select(IT87_LDN3);
+	ldn3_act = superio_inb(IT87_LDN_ACTIVATE);
+	/*
+	 * restore the LDN that was selected: the callbacks here select the
+	 * GPIO LDN anyway, but other drivers using the Super I/O may not
+	 */
+	superio_select(ldn);
+
+	superio_exit();
+
+exit:
+	mutex_unlock(&it87_gpio->lock);
+	if (rc)
+		return rc;
+
+	seq_printf(s, "ldn 7 0x25-0x2c pin mux:       %*ph\n",
+		   IT87_GPIO_PIN_MUX_SIZE, mux);
+	seq_printf(s, "ldn 7 0xb0-0xb7 polarity:      %*ph\n", 8, polarity);
+	seq_printf(s, "ldn 7 0xb8-0xbf pull-up:       %*ph\n", 8, pullup);
+	seq_printf(s, "ldn 7 0xc0-0xc7 simple I/O:    %*ph\n", 8, simple);
+	seq_printf(s, "ldn 7 0xc8-0xcf output enable: %*ph\n", 8, output);
+	seq_printf(s, "ldn 7 0xe9:                    %02x\n", e9);
+	seq_printf(s, "ldn 7 0xf8-0xfb blink:         %*ph\n", 4, blink);
+	seq_printf(s, "ldn 3 0x30 activate:           %02x\n", ldn3_act);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(it87_gpio_regs);
+
+static struct dentry *it87_gpio_debugfs;
+
+static void it87_gpio_debugfs_init(struct it87_gpio *it87_gpio)
+{
+	if (!it87_gpio->pin_mux)
+		return;
+
+	it87_gpio_debugfs = debugfs_create_dir(KBUILD_MODNAME, NULL);
+	debugfs_create_file("regs", 0444, it87_gpio_debugfs, it87_gpio,
+			    &it87_gpio_regs_fops);
+}
+
+static void it87_gpio_debugfs_exit(void)
+{
+	debugfs_remove_recursive(it87_gpio_debugfs);
+}
+#else
+static void it87_gpio_debugfs_init(struct it87_gpio *it87_gpio)
+{
+}
+
+static void it87_gpio_debugfs_exit(void)
+{
+}
+#endif /* CONFIG_DEBUG_FS */
+
 static const struct gpio_chip it87_template_chip = {
 	.label			= KBUILD_MODNAME,
 	.owner			= THIS_MODULE,
@@ -622,6 +847,14 @@ static int __init it87_gpio_init(void)
 		it87_gpio->chip.ngpio = 64;
 		it87_gpio->blink_modes = it8625_blink_modes;
 		it87_gpio->num_blink_modes = ARRAY_SIZE(it8625_blink_modes);
+		/*
+		 * BW: pin configuration as in ASUSTOR's firmware, see
+		 * it87_gpio_check_pin_config(). Its table has polarity
+		 * registers 0xb0-0xb5 for groups 1-6.
+		 */
+		it87_gpio->pin_mux = it8625_pin_mux;
+		it87_gpio->num_pin_mux = ARRAY_SIZE(it8625_pin_mux);
+		it87_gpio->polarity_size = 6;
 		break;
 	case IT8620_ID:
 	case IT8628_ID:
@@ -711,6 +944,8 @@ static int __init it87_gpio_init(void)
 	if (rc)
 		goto labels_free;
 
+	it87_gpio_debugfs_init(it87_gpio);
+
 	return 0;
 
 labels_free:
@@ -724,6 +959,7 @@ static void __exit it87_gpio_exit(void)
 {
 	struct it87_gpio *it87_gpio = &it87_gpio_chip;
 
+	it87_gpio_debugfs_exit();
 	gpiochip_remove(&it87_gpio->chip);
 	release_region(it87_gpio->io_base, it87_gpio->io_size);
 	kfree(it87_gpio->chip.names[0]);
