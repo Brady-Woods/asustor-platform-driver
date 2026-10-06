@@ -245,11 +245,17 @@ Older versions of the driver only created it on some devices.
 
 ### Buzzer
 
-The buzzer is the PC speaker (PIT channel 2, switched on through port 0x61), but it only sounds
-while an IT87 GPIO (GP75, the "buzzer gate") is high: ASUSTOR's firmware sets it before every beep
-and clears it afterwards. The `asustor` module claims that GPIO (low while idle) and registers its
-own input device for the buzzer, **"ASUSTOR Buzzer"**, which plays tones on the PC speaker exactly
-like the kernel's `pcspkr` driver and opens the gate while a tone plays. `pcspkr` isn't needed.
+The buzzer is the PC speaker output (port 0x61), but it only sounds while an IT87 GPIO (GP75, the
+"buzzer gate") is high: ASUSTOR's firmware sets it before every beep and clears it afterwards.
+The `asustor` module claims that GPIO (low while idle) and registers its own input device for the
+buzzer, **"ASUSTOR Buzzer"**, which plays tones on the PC speaker and opens the gate while a tone
+plays. `pcspkr` isn't needed.
+
+The PIT (timer chip) doesn't generate the tone on these devices: its channel 2 output never
+changes when it's programmed for a tone (checked on an AS6704T: its clock is gated), which is why
+`pcspkr` is silent. So "ASUSTOR Buzzer" makes the square wave in software, like the kernel's
+`snd-pcsp` and ASUSTOR's own buzzer driver: it keeps the PIT channel's output steady and toggles
+the speaker data bit of port 0x61 from an hrtimer every half period of the tone.
 
 To beep, send `EV_SND` events to its event device. It's `/dev/input/by-path/platform-asustor-event`
 (from udev's `60-persistent-input.rules`), or find it by name:
@@ -285,10 +291,11 @@ The module parameter `buzzer` (default `1`) can be set to `0` to leave the buzze
 Notes:
 - The console bell is audible now. `setterm --blength 0` (run on that console) silences it for a
   virtual console, or load `asustor` with `buzzer=0`.
-- If `pcspkr` is loaded, its "PC Speaker" input device still exists, but stays silent: the gate
-  only opens for "ASUSTOR Buzzer". Both drive the same PIT channel (under the kernel's
-  `i8253_lock`, so they never mix up its registers): if both play at once, the last tone change
-  wins, and either one stopping its tone stops both.
+- If `pcspkr` is loaded, its "PC Speaker" input device still exists, but stays silent (the PIT
+  doesn't run, and the gate only opens for "ASUSTOR Buzzer"). Both change port 0x61 under the
+  kernel's `i8253_lock`, so they never mix up their writes.
+- While a tone plays, the hrtimer fires twice per period (4000 times a second at 2 kHz). That's
+  fine for beeps; very high frequencies (up to 32766 Hz) mean correspondingly more interrupts.
 - The gate GPIO is set from a work item (the IT87 GPIO driver can sleep), so it opens a fraction
   of a millisecond to a few milliseconds after the tone starts; very short tones may be cut short
   or not sound at all.

@@ -16,6 +16,7 @@
 #include <linux/gpio/driver.h>
 #include <linux/gpio/machine.h>
 #include <linux/gpio_keys.h>
+#include <linux/hrtimer.h>
 #include <linux/i8253.h>
 #include <linux/input.h>
 #include <linux/io.h>
@@ -1128,14 +1129,23 @@ MODULE_PARM_DESC(
 	"Valid values: " VALID_OVERRIDE_NAMES);
 
 // The buzzer.
-// The buzzer of these devices is the PC speaker: PIT channel 2, switched to
-// the speaker by bits 0-1 of port 0x61, which is what the kernel's pcspkr
-// driver and ASUSTOR's own buzzer driver (asbuzzer_js) program. But it only
-// sounds while the buzzer gate GPIO (GP75) is high: ASUSTOR's firmware sets it
-// before every beep and clears it afterwards.
+// The buzzer of these devices is the PC speaker output: port 0x61 bit 1
+// (speaker data) ANDed with the output of PIT channel 2 (gated by bit 0). But
+// it only sounds while the buzzer gate GPIO (GP75) is high: ASUSTOR's firmware
+// sets it before every beep and clears it afterwards.
 //
-// So asustor has its own input device for the buzzer, "ASUSTOR Buzzer", whose
-// event() callback plays tones like pcspkr's (asustor_buzzer_play()) and opens
+// The PIT doesn't make the tone here: on the AS6704T, PIT channel 2's output
+// (port 0x61 bit 5) stays high while it is programmed for a 2 kHz square wave,
+// i.e. its clock is gated (79350 reads during a tone, no change; 2026-10-06).
+// That's why the kernel's pcspkr driver is silent on these devices even with
+// the gate open, and why ASUSTOR's asbuzzer_js toggles port 0x61 itself. So
+// the tone is made in software, like the kernel's snd-pcsp does for PCM: the
+// PIT channel 2 gate (bit 0) is kept off, which holds its output high (mode
+// 3), and an hrtimer toggles the speaker data bit (bit 1) every half period.
+// That works whether or not the PIT's clock runs.
+//
+// asustor has its own input device for the buzzer, "ASUSTOR Buzzer", whose
+// event() callback starts and stops the tone (asustor_buzzer_play()) and opens
 // the gate while one plays. Like for any input device with EV_SND, tones come
 // from:
 // - EV_SND events written to its event device (e.g. by `beep -e`):
@@ -1152,10 +1162,10 @@ MODULE_PARM_DESC(
 // input_dev_poweroff()), and with the previous value on resume.
 // (drivers/input/input.c in Linux 6.1, 6.6, 6.12 and 6.17.)
 //
-// pcspkr's "PC Speaker" device still exists and plays on the same PIT channel,
-// but stays silent since nothing opens the gate for it. Both drivers take
-// i8253_lock for each change, so their register writes never interleave; if
-// both play at once, the last change wins (a stop from either silences both).
+// pcspkr's "PC Speaker" device still exists, but stays silent (the PIT doesn't
+// run, and nothing opens the gate for it). Both drivers change port 0x61 under
+// i8253_lock, so their writes never interleave; a stop from pcspkr while this
+// buzzer plays clears bit 1 until the next toggle, which is inaudible.
 
 static bool buzzer = true;
 module_param(buzzer, bool, S_IRUSR | S_IRGRP | S_IROTH);
@@ -1175,32 +1185,62 @@ static struct input_dev *asustor_buzzer_input;
 static bool asustor_buzzer_tone;     // is a tone playing (gate open)?
 static bool asustor_buzzer_shutdown; // rebooting or powering off: keep closed
 static struct work_struct asustor_buzzer_work;
+static struct hrtimer asustor_buzzer_timer;
+// half period of the playing tone in ns, 0 if none; under i8253_lock
+static u64 asustor_buzzer_half_ns;
 
-// Plays a tone with a period of count PIT ticks on the PC speaker, or stops it
-// if count is 0. Exactly what pcspkr_event() in drivers/input/misc/pcspkr.c
-// does (the same in Linux 6.1 to 6.17), including the locking: the PIT is
-// shared with pcspkr, snd-pcsp and the kernel's PIT code, which all program
-// it under i8253_lock. Like pcspkr, this doesn't request the I/O ports.
-static void asustor_buzzer_play(unsigned int count)
+// The hrtimer callback (hard interrupt context): toggles the speaker data bit
+// every half period while a tone plays. Port 0x61 is shared with the kernel's
+// PIT code, pcspkr and snd-pcsp, which all change it under i8253_lock, so this
+// does too. Checking asustor_buzzer_half_ns under the lock means a stop can't
+// race with a toggle: once it's 0, the bit is cleared and the timer ends.
+static enum hrtimer_restart asustor_buzzer_toggle(struct hrtimer *timer)
 {
+	enum hrtimer_restart ret = HRTIMER_NORESTART;
 	unsigned long flags;
+	u64 half;
 
 	raw_spin_lock_irqsave(&i8253_lock, flags);
+	half = asustor_buzzer_half_ns;
+	if (half) {
+		outb((inb(0x61) & ~1) ^ 2, 0x61);
+		hrtimer_forward_now(timer, ns_to_ktime(half));
+		ret = HRTIMER_RESTART;
+	}
+	raw_spin_unlock_irqrestore(&i8253_lock, flags);
+	return ret;
+}
 
-	if (count) {
-		// set command for counter 2, 2 byte write
+// Plays a tone of hz Hz on the PC speaker, or stops it if hz is 0. Safe in
+// atomic context. Like pcspkr, this doesn't request the I/O ports (they belong
+// to the kernel's PIT code).
+static void asustor_buzzer_play(unsigned int hz)
+{
+	unsigned long flags;
+	u64 half = hz ? div_u64(NSEC_PER_SEC, 2 * hz) : 0;
+
+	raw_spin_lock_irqsave(&i8253_lock, flags);
+	asustor_buzzer_half_ns = half;
+	if (half) {
+		// PIT channel 2 in mode 3 (square wave), as pcspkr leaves it, with
+		// its gate (bit 0) off: that holds its output high, so the speaker
+		// follows bit 1 alone; start with the speaker data bit on
 		outb_p(0xB6, 0x43);
-		// select desired HZ
-		outb_p(count & 0xff, 0x42);
-		outb((count >> 8) & 0xff, 0x42);
-		// enable counter 2
-		outb_p(inb_p(0x61) | 3, 0x61);
+		outb_p(0, 0x42);
+		outb(0, 0x42);
+		outb_p((inb_p(0x61) & ~1) | 2, 0x61);
 	} else {
-		// disable counter 2
 		outb(inb_p(0x61) & 0xFC, 0x61);
 	}
-
 	raw_spin_unlock_irqrestore(&i8253_lock, flags);
+
+	// (re)start the timer for a new tone or frequency; for a stop, the
+	// callback ends it if it's running right now
+	if (half)
+		hrtimer_start(&asustor_buzzer_timer, ns_to_ktime(half),
+		              HRTIMER_MODE_REL);
+	else
+		hrtimer_try_to_cancel(&asustor_buzzer_timer);
 }
 
 // The IT87 GPIO can sleep, so the gate is set from a work item. It sets the
@@ -1218,7 +1258,7 @@ static void asustor_buzzer_work_fn(struct work_struct *work)
 static int asustor_buzzer_event(struct input_dev *dev, unsigned int type,
                                 unsigned int code, int value)
 {
-	unsigned int count = 0;
+	unsigned int hz = 0;
 
 	// the same as pcspkr_event(): SND_BELL is 1000 Hz, SND_TONE the given
 	// frequency in Hz, 0 (or one out of range) stops the tone
@@ -1237,11 +1277,11 @@ static int asustor_buzzer_event(struct input_dev *dev, unsigned int type,
 	}
 
 	if (value > 20 && value < 32767)
-		count = PIT_TICK_RATE / value;
+		hz = value;
 
-	asustor_buzzer_play(count);
+	asustor_buzzer_play(hz);
 
-	WRITE_ONCE(asustor_buzzer_tone, count != 0);
+	WRITE_ONCE(asustor_buzzer_tone, hz != 0);
 	schedule_work(&asustor_buzzer_work);
 	return 0;
 }
@@ -1255,6 +1295,7 @@ static int asustor_buzzer_reboot(struct notifier_block *nb,
 {
 	WRITE_ONCE(asustor_buzzer_shutdown, true);
 	asustor_buzzer_play(0);
+	hrtimer_cancel(&asustor_buzzer_timer);
 	cancel_work_sync(&asustor_buzzer_work);
 	gpiod_set_value_cansleep(asustor_buzzer_gpio, 0);
 	return NOTIFY_DONE;
@@ -1313,6 +1354,13 @@ static void __init asustor_buzzer_init(struct device *dev)
 	}
 	asustor_buzzer_gpio = gpio;
 	INIT_WORK(&asustor_buzzer_work, asustor_buzzer_work_fn);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
+	hrtimer_setup(&asustor_buzzer_timer, asustor_buzzer_toggle,
+	              CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+#else
+	hrtimer_init(&asustor_buzzer_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	asustor_buzzer_timer.function = asustor_buzzer_toggle;
+#endif
 
 	input = input_allocate_device();
 	if (!input) {
@@ -1356,8 +1404,10 @@ static void asustor_buzzer_exit(void)
 	// The input core doesn't call asustor_buzzer_event() once this returns.
 	input_unregister_device(asustor_buzzer_input);
 	asustor_buzzer_input = NULL;
-	// turn off the speaker, like pcspkr_remove()
+	// turn off the speaker, like pcspkr_remove(), and make sure the timer
+	// callback isn't running anymore before the module goes away
 	asustor_buzzer_play(0);
+	hrtimer_cancel(&asustor_buzzer_timer);
 	cancel_work_sync(&asustor_buzzer_work);
 	gpiod_set_value_cansleep(asustor_buzzer_gpio, 0);
 	gpiod_put(asustor_buzzer_gpio);
