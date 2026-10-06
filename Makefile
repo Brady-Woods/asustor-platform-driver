@@ -3,7 +3,7 @@ KERNEL_MODULES := /lib/modules/$(TARGET)
 KERNEL_BUILD   := $(KERNEL_MODULES)/build
 SYSTEM_MAP     := /boot/System.map-$(TARGET)
 DRIVER         := asustor it87 asustor_gpio_it87
-DRIVER_VERSION := v0.2
+DRIVER_VERSION := v0.3
 #DRIVER_VERSION ?= $(shell git describe --long)
 
 # DKMS

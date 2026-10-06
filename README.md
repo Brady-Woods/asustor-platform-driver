@@ -9,28 +9,41 @@ On many systems, ASUSTOR uses a mix of IT87 and CPU GPIOs to control leds and bu
 ## About this fork
 
 This is a fork of [mafredri/asustor-platform-driver](https://github.com/mafredri/asustor-platform-driver).
-Its `main` is upstream `main` plus three changes that have been submitted
-upstream but aren't merged yet. They're combined and tested together here
-because the hardware they're for needs all three at once.
-
 It runs an ASUSTOR AS6704T (LOCKERSTOR 4 Gen2) under TrueNAS SCALE, which
-doesn't ship this driver. The status daemon
+doesn't ship this driver, and brings the driver closer to what ASUSTOR's own
+firmware (ADM) does on that hardware. The status daemon
 [truenas-asustor-chassisd](https://github.com/Brady-Woods/truenas-asustor-chassisd)
-drives the front panel through it and depends on these changes.
+drives the front panel through it and needs this fork's `main`, v0.3 or later
+(`git clone https://github.com/Brady-Woods/asustor-platform-driver`).
 
-| Change | Upstream PR | Branch here |
-|---|---|---|
-| Hardware LED blinking through the IT8625E's GP LED blink units, plus `asustor_gpio_it87` fixes (Simple I/O switches, re-selecting the GPIO LDN on every access, locking); removes the `gpled*` sysfs files | [#46](https://github.com/mafredri/asustor-platform-driver/pull/46) | `gpio-it87-hw-blink` |
-| `asustor-front-usb` LED trigger, so the front USB LED follows the front port | [#47](https://github.com/mafredri/asustor-platform-driver/pull/47) | `front-usb-led` |
-| Per-bay disk activity LED triggers (`asustor-sataN`) and the `disk_led_ready` parameter, writable at runtime | [#48](https://github.com/mafredri/asustor-platform-driver/pull/48) | `per-bay-disk-led` |
+v0.3 is upstream `main` plus:
 
-There's also a `.gitignore` for out-of-tree build artifacts.
+- Three changes submitted upstream but not merged yet, combined here because
+  they conflict with each other (each also stays on its own branch for review):
+  - [#46](https://github.com/mafredri/asustor-platform-driver/pull/46) (`gpio-it87-hw-blink`):
+    hardware LED blinking through the IT8625E's GP LED blink units, plus `asustor_gpio_it87`
+    fixes (Simple I/O switches, re-selecting the GPIO LDN on every access, locking); removes
+    the `gpled*` sysfs files.
+  - [#47](https://github.com/mafredri/asustor-platform-driver/pull/47) (`front-usb-led`):
+    `asustor-front-usb` LED trigger, so the front USB LED follows the front port.
+  - [#48](https://github.com/mafredri/asustor-platform-driver/pull/48) (`per-bay-disk-led`):
+    per-bay disk activity LED triggers (`asustor-sataN`) and the `disk_led_ready` parameter,
+    here also writable at runtime.
+- `asustor_gpio_it87` no longer changes a pin's direction in `request()`, and implements
+  `get_direction`.
+- [Power rails](#power-rails): the LCD and front panel power GPIOs are held by the `asustor`
+  device instead of being LEDs, with `lcd_power` to switch the LCD.
+- The ["ASUSTOR Buzzer"](#buzzer) input device: the tone is made with an hrtimer, since the PIT's
+  clock is gated on the AS6704T, and the buzzer gate GPIO opens while it plays.
+- [`ac_power_resume` and `eup`](#power-settings-ac-power-loss-and-eup) power settings.
+- [Pin configuration checks](#gpio-pin-configuration-it8625e) for the IT8625E (`fix_pin_config`)
+  and a debugfs register dump.
+- [Frank Crawford's `it87`](#it87-fan-control-and-pwm-polarity) (with its PR #110, `force_pwm`)
+  vendored as `it87`, replacing `asustor-it87`, plus a `led_pwm` parameter for the
+  [front panel LED brightness](#front-panel-led-brightness).
+- The AS6704T's [reset button](#reset-button) as `KEY_VENDOR` (a press hasn't been tested yet).
 
-Each change stays on its own branch for review upstream. The three PRs
-conflict with each other, so `main` (also kept as `combined-46-47-48`)
-resolves those conflicts once and is the version that's actually built and
-tested on the hardware. Once the PRs are merged upstream, this fork can go
-back to tracking upstream `main`.
+Once all of this is upstream, this fork can go back to tracking upstream `main`.
 
 ## Dependencies
 
