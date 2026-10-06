@@ -40,7 +40,8 @@ v0.3 is upstream `main` plus:
   and a debugfs register dump.
 - [Frank Crawford's `it87`](#it87-fan-control-and-pwm-polarity) (with its PR #110, `force_pwm`)
   vendored as `it87`, replacing `asustor-it87`, plus a `led_pwm` parameter for the
-  [front panel LED brightness](#front-panel-led-brightness).
+  [front panel LED brightness](#front-panel-led-brightness) and `temp_type`, `temp_source`,
+  `reset_limits` and `skip_pwm` parameters for the [sensors](#it87-sensors-on-the-as6704t).
 - The AS6704T's [reset button](#reset-button) as `KEY_VENDOR` (a press hasn't been tested yet).
 
 Once all of this is upstream, this fork can go back to tracking upstream `main`.
@@ -63,7 +64,8 @@ Once all of this is upstream, this fork can go back to tracking upstream `main`.
     the IT8625E chip that is used in several newer ASUSTOR devices, including
     [hardware blinking](#hardware-led-blinking) of up to two LEDs.
   - May require adding `acpi_enforce_resources=lax` to kernel boot arguments for full functionality
-  - Temperature monitoring (`lm-sensors`)
+  - Temperature monitoring (`lm-sensors`), see [below](#it87-sensors-on-the-as6704t) for the
+    AS6704T
   - Fan speed regulation via `pwm1`
     - See [`example/fancontrol`](./example/fancontrol) for an example `/etc/fancontrol` config for a AS62 system
     - `pwm1` etc should be in `/sys/devices/platform/it87.*/hwmon/hwmon*/`
@@ -426,6 +428,7 @@ means the LEDs are off), and fan control tools take it for a fan. With the `it87
 # /etc/modprobe.d/it87.conf
 options it87 force_pwm=1 led_pwm=3 led_pwm_invert=1
 ```
+(see [below](#it87-sensors-on-the-as6704t) for all the options the AS6704T needs)
 ```
 cat /sys/class/leds/front_panel::brightness/brightness
 echo 76 | sudo tee /sys/class/leds/front_panel::brightness/brightness
@@ -442,6 +445,81 @@ echo 76 | sudo tee /sys/class/leds/front_panel::brightness/brightness
 - ASUSTOR's firmware dims the front panel LEDs like this on most of its x86 models with an IT87
   chip, but the AS6704T is the only one where it's been checked, and the LED device hasn't been
   tested on hardware yet.
+
+### `it87` sensors on the AS6704T
+
+The BIOS of the AS6704T leaves the IT8625E's sensors half set up: no temperature channel is
+configured (`temp1`-`temp3` read -128 °C), and the limits are arbitrary values, so most alarms
+are set although the inputs are fine. With these `it87` options (the first three are from
+[above](#it87-fan-control-and-pwm-polarity) and [Front panel LED brightness](#front-panel-led-brightness)),
+every channel should read what it is and no alarm should be set without a reason:
+```
+# /etc/modprobe.d/it87.conf
+options it87 force_pwm=1 led_pwm=3 led_pwm_invert=1 temp_type=0,3,0 temp_source=0,2,0 reset_limits=1 skip_pwm=2,4,5,6
+```
+
+| Option | What it does |
+|---|---|
+| `force_pwm=1` | Enables the `pwm*` files, keeping the active low polarity of the BIOS |
+| `led_pwm=3 led_pwm_invert=1` | PWM3 is the front panel LED brightness (`front_panel::brightness`), not `pwm3` |
+| `temp_type=0,3,0` | temp2 is a thermal diode (sensor type 3, as in `tempN_type`); 0 leaves temp1 and temp3 as they are |
+| `temp_source=0,2,0` | temp2 reads the TMPIN2 pin; 0 leaves temp1 and temp3 as they are |
+| `reset_limits=1` | Sets all limits to "no limit" when `it87` is loaded, which clears the false alarms |
+| `skip_pwm=2,4,5,6` | Doesn't expose (or ever write) PWM2 and PWM4-6, whose use is unknown. Optional, see below |
+
+The channels with these options:
+
+- **`temp2` is the system (board) temperature**, the one ASUSTOR's firmware (ADM) reads. It's
+  about 37 °C on an idle system, and `temp2_type` reads 3 (thermal diode; read-only). `temp1` and
+  `temp3` aren't connected and keep reading -128 °C. ADM only uses the system temperature as an
+  emergency input: above **89 °C**, or when it can't be read, ADM runs the fan at its maximum
+  (45 % on this model) and, for a sensor that can't be read, reports a "System Sensor Fault".
+  Otherwise its default (automatic) fan control ignores it: the fan follows the CPU, disk and
+  SSD temperatures.
+  The temperature setup is done again after resume.
+- `fan1` is the fan (the only one of the AS6704T). `fan2` and `fan3` aren't connected and read
+  0 RPM, without alarms now (their minimums are 0 RPM).
+- `in0`-`in9` are all real inputs; ASUSTOR's firmware doesn't label them, `in7` (3VSB), `in8`
+  (Vbat) and `in9` (+3.3V) have the chip's own labels.
+- `pwm1` controls the fan. PWM3 is the front panel LED. **PWM2 and PWM4-6 are of unknown use**:
+  the pin configuration says they're PWM outputs, but ASUSTOR's firmware never drives them (the
+  BIOS leaves PWM2 at 51, PWM4-6 at 128). With `skip_pwm=2,4,5,6`, `it87` doesn't create
+  `pwm2`, `pwm4`-`pwm6` and never writes them, so neither can `pwmconfig` (which drives every
+  output to full and to zero speed to find the fans) or a misconfigured fan control. Without it,
+  they stay visible; then just don't write them. Hiding them is recommended, since there's
+  nothing to gain from writing them and nobody knows what they're wired to.
+- `intrusion0_alarm` reads 1, but the AS6704T has no known chassis intrusion switch (ADM never
+  looks at it), so it means nothing here. `it87` doesn't clear it when loading: on boards with a
+  switch, it records an opening while the driver wasn't loaded. To clear it:
+  `echo 0 | sudo tee /sys/devices/platform/it87.*/hwmon/hwmon*/intrusion0_alarm` (if it comes
+  back right away, the input is simply asserted; ignore it).
+
+With `reset_limits=1`, the chip raises no alarm by itself, including for a stalled fan (`fan1_min`
+is 0 RPM too): set limits with `lm-sensors` if you want them (e.g. a `fan1_min` below the speed
+at the lowest PWM your fan control uses), they're kept until `it87` is loaded again. For example
+`/etc/sensors.d/as6704t.conf`, applied with `sudo sensors -s`:
+```
+chip "it8625-*"
+    label temp2 "System"
+    set temp2_max 89     # ADM's emergency threshold
+    # optional: hide the unconnected inputs from `sensors`
+    ignore temp1
+    ignore temp3
+    ignore fan2
+    ignore fan3
+    ignore intrusion0
+```
+
+The options are generic, see `modinfo -p it87`: `temp_type` (temp1-temp3: 3 = thermal diode,
+4 = thermistor, 6 = PECI where the chip has it) works on any chip `it87` supports;
+`temp_source` (1-3 = TMPIN1-3) on the IT8625E, IT8655E and IT8665E; 0 always leaves a channel as
+the BIOS set it. They apply to every chip `it87` finds.
+
+*Notes:* ASUSTOR's firmware writes 0x10 to register 0x1D of bank 2 (`0x21D` in `it87`, the
+temperature sources of temp1 and temp2) and sets bit 1 of register 0x51 (temp2 is a thermal
+diode) before every reading; doing the same on an AS6704T made temp2 read 37 °C. `temp_type` and
+`temp_source` do exactly that. The parameters themselves haven't been tested on hardware yet
+(including whether the fan alarms of `fan2` and `fan3` really clear with a minimum of 0 RPM).
 
 ### Override detection of ASUSTOR device by `asustor` kernel module
 
@@ -499,10 +577,6 @@ NOTE: If `gpioinfo` does not return anything, you may need to figure out which (
 ## TODO
 
 - Support variable amount of disk LEDs
-- IT8625E temperatures: `temp1`-`temp3` read -128 °C on the AS6704T. ASUSTOR's firmware sets
-  register 0x1D of bank 2 (`0x21D` in `it87`) to 0x10 and bit 1 of EC register 0x51 (temp2 is then
-  a thermal diode), and reads temp2 as the system temperature. Try that on hardware before adding it
-  to `it87`.
 - ~~Create a new led trigger driver so that we can blink disk LEDs individually, the existing `disk-activity` trigger always blinks all LEDs on activity from any disk~~
   - Pray that [[PATCH v13 0/2] Introduce block device LED trigger](https://lore.kernel.org/lkml/20221227225226.546489-1-arequipeno@gmail.com/T/#mc8758efa18e1b7ed51a50c298d881a2e91280b1f)
     by Ian Pilcher lands in the linux kernel
