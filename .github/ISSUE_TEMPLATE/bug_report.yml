@@ -1,0 +1,63 @@
+name: Bug report
+description: Something in the driver doesn't work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please check the [README](https://github.com/Brady-Woods/asustor-platform-driver#readme) and the existing issues first.
+  - type: input
+    id: model
+    attributes:
+      label: Device model
+      placeholder: AS6704T
+    validations:
+      required: true
+  - type: input
+    id: kernel
+    attributes:
+      label: Kernel and distribution
+      description: "`uname -r` and the distribution"
+      placeholder: 6.12.33-production+truenas, TrueNAS SCALE 25.10
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Driver version
+      description: A release tag, or `git describe --tags --always --dirty` in your checkout.
+      placeholder: v0.4.0
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened, and what did you expect?
+      description: Include the steps to reproduce it.
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Module options
+      description: Your options for `asustor`, `asustor_gpio_it87` and `it87` (e.g. from `/etc/modprobe.d/`), if any.
+      render: text
+  - type: textarea
+    id: dmesg
+    attributes:
+      label: Kernel messages
+      description: "Output of `sudo dmesg | grep -iE 'asustor|it87|gpio'`"
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: regs
+    attributes:
+      label: GPIO pin configuration (IT8625E devices)
+      description: Output of `sudo cat /sys/kernel/debug/asustor_gpio_it87/regs` (needs debugfs). Leave empty if the file doesn't exist.
+      render: text
+  - type: textarea
+    id: other
+    attributes:
+      label: Anything else
+      description: For device detection problems, also `sudo dmidecode -s system-manufacturer` and `sudo dmidecode -s system-product-name`.

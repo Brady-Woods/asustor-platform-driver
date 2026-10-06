@@ -19,6 +19,7 @@ based on upstream `main` as of December 2025 (cb392fc).
 - This changelog.
 - CONTRIBUTING.md: how to report bugs, coding style, commit format with
   `Signed-off-by` (DCO), the vendored `it87` and the release process.
+- Issue forms for bug reports and feature requests, and a pull request template.
 
 ### Changed
 

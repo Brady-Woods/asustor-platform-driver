@@ -1,0 +1,25 @@
+name: Feature request or new device
+description: Suggest a feature, or support for another ASUSTOR device.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For support of another device, please also include the output of the commands in the "Support" section of the [README](https://github.com/Brady-Woods/asustor-platform-driver#support).
+  - type: textarea
+    id: description
+    attributes:
+      label: What would you like the driver to do, and why?
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Device model
+      placeholder: AS6704T
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware details
+      description: For a new device, the output of the commands from the README's "Support" section (`dmesg`, `dmidecode`, `gpioinfo`, `lspci -nn -PP`). Anything known from ASUSTOR's firmware helps too.
+      render: text

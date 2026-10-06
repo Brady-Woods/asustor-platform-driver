@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Upstream project (mafredri/asustor-platform-driver)
+    url: https://github.com/mafredri/asustor-platform-driver/issues
+    about: Problems that aren't specific to this fork can also be reported upstream.
+  - name: truenas-asustor-chassisd
+    url: https://github.com/Brady-Woods/truenas-asustor-chassisd/issues
+    about: The LCD and front panel status daemon that uses this driver.
