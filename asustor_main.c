@@ -65,10 +65,16 @@
 // If ledtrig-blkdev ever lands, use that instead of disk-activity:
 // https://lore.kernel.org/linux-leds/20210819025053.222710-1-arequipeno@gmail.com/
 // Also, the "disk-activity" trigger does (currently?) *not* trigger for NVME devices.
+// Power rails (and blue:lan, which is the front LAN LED rail on some devices) use
+// retain_state_shutdown, so they are not switched off when asustor is unloaded
+// (that would e.g. reboot the LCD's MCU) or at shutdown.
 static struct gpio_led asustor_leds[] = {
-	{ .name          = "power:front_panel",                             // 0
-	  .default_state = LEDS_GPIO_DEFSTATE_ON },
-	{ .name = "power:lcd", .default_state = LEDS_GPIO_DEFSTATE_ON },    // 1
+	{ .name                  = "power:front_panel",                     // 0
+	  .default_state         = LEDS_GPIO_DEFSTATE_ON,
+	  .retain_state_shutdown = 1 },
+	{ .name                  = "power:lcd",                             // 1
+	  .default_state         = LEDS_GPIO_DEFSTATE_ON,
+	  .retain_state_shutdown = 1 },
 	{ .name = "blue:power", .default_state = LEDS_GPIO_DEFSTATE_ON },   // 2
 	{ .name = "red:power", .default_state = LEDS_GPIO_DEFSTATE_OFF },   // 3
 	{ .name = "green:status", .default_state = LEDS_GPIO_DEFSTATE_ON }, // 4
@@ -80,7 +86,9 @@ static struct gpio_led asustor_leds[] = {
 	},
 	{ .name = "blue:usb", .default_state = LEDS_GPIO_DEFSTATE_OFF },  // 6
 	{ .name = "green:usb", .default_state = LEDS_GPIO_DEFSTATE_OFF }, // 7
-	{ .name = "blue:lan", .default_state = LEDS_GPIO_DEFSTATE_ON },   // 8
+	{ .name                  = "blue:lan",                              // 8
+	  .default_state         = LEDS_GPIO_DEFSTATE_ON,
+	  .retain_state_shutdown = 1 },
 	DISK_ACT_LED("sata1"),                                            // 9
 	DISK_ERR_LED("sata1"),                                            // 10
 	DISK_ACT_LED("sata2"),                                            // 11
