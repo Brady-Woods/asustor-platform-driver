@@ -306,6 +306,16 @@ static struct gpio_keys_button asustor_gpio_keys_table[] = {
 		.active_low = 1,
 		.gpio       = -1, // Invalid, set in init.
 	},
+	{
+		// The reset button on the back, which ASUSTOR's firmware uses to
+		// reset settings when held for a few seconds. Not KEY_RESTART:
+		// systemd-logind reboots on that key (HandleRebootKey).
+		.desc       = "Reset Button",
+		.code       = KEY_VENDOR,
+		.type       = EV_KEY,
+		.active_low = 1,
+		.gpio       = -1, // Invalid, set in init.
+	},
 };
 
 static struct gpio_keys_platform_data asustor_keys_pdata = {
@@ -330,6 +340,19 @@ static struct gpiod_lookup_table asustor_6100_gpio_keys_lookup = { // same for 6
 	.table = {
 		GPIO_LOOKUP_IDX(GPIO_IT87, 20, NULL, 0, GPIO_ACTIVE_LOW),
 		// 1 (Power Button is already handled properly via ACPI).
+		{}
+	},
+};
+
+static struct gpiod_lookup_table asustor_as6704_gpio_keys_lookup = {
+	.dev_id = "gpio-keys-polled",
+	.table = {
+		GPIO_LOOKUP_IDX(GPIO_IT87, 20, NULL, 0, GPIO_ACTIVE_LOW),	// USB Copy Button
+		// 1 (Power Button is already handled properly via ACPI).
+		// Reset Button: GP81, which ASUSTOR's firmware reads as its reset button
+		// (GPIO engine id 19) on Jasper Lake. Active low is inferred: it idles high
+		// (verified on AS6704T 2026-10-05), a press is not tested yet.
+		GPIO_LOOKUP_IDX(GPIO_IT87, 57, NULL, 2, GPIO_ACTIVE_LOW),	// Reset Button
 		{}
 	},
 };
@@ -483,7 +506,7 @@ static struct asustor_driver_data asustor_as6704_driver_data = {
 		{ 0x1b21, 0x1164, 1, 1 }
 	},
 	.leds      = &asustor_as6704_gpio_leds_lookup,
-	.keys      = &asustor_6100_gpio_keys_lookup,
+	.keys      = &asustor_as6704_gpio_keys_lookup,
 	.usb_led   = &asustor_as6704_usb_led,
 	.disk_bays = &asustor_as6704_disk_bays,
 	.gpios     = &asustor_jsl_lcd_gpios_lookup,

@@ -103,6 +103,8 @@ The following DMI system-manufacturer / system-product-name combinations are cur
 - Buttons
   - USB Copy Button
   - Power Button (AS6)
+  - Reset Button on the back (AS6704T, as `KEY_VENDOR`: not `KEY_RESTART`, which would make
+    systemd-logind reboot)
 - Power rails: LCD power (`/sys/devices/platform/asustor/lcd_power`), front panel power,
   see [below](#power-rails)
 - Buzzer (AS66xx, AS67xx, AS54xx, FS67xx) as the "ASUSTOR Buzzer" input device, see [below](#buzzer)
@@ -294,6 +296,27 @@ Notes:
   on suspend the kernel stops the tone.
 - Not tested on hardware yet. GP75 and its polarity are from ASUSTOR's firmware, which drives it on
   all its Jasper Lake devices and on AS66xx.
+
+### Reset button
+
+The pinhole button on the back of the AS6704T is not a hardware reset: it's an IT87 GPIO input
+(GP81) that software polls. ASUSTOR's firmware uses it to restore settings after it's held for
+about 5 seconds. The driver only reports it; it does nothing on its own.
+
+It's a key of the `asustor-keys` input device (`gpio-keys-polled`, polled every 50 ms), next to the
+USB Copy Button, and reports `KEY_VENDOR` (code 360) on press (value 1) and release (value 0):
+
+```sh
+sudo evtest   # pick the "asustor-keys" device
+```
+
+It deliberately isn't `KEY_RESTART`: systemd-logind watches `asustor-keys` (it also carries
+`KEY_POWER`) and reboots on `KEY_RESTART` by default (`HandleRebootKey=reboot`), so a brush of the
+pinhole would reboot the machine. Anything that wants a "hold for N seconds" action, like ASUSTOR's
+firmware, has to time the press itself.
+
+*Note:* Only mapped on AS6704T. The GPIO idles high there (checked), so it's mapped active low;
+an actual press hasn't been tested yet.
 
 ### Power settings: AC power loss and EuP
 
