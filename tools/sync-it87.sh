@@ -207,7 +207,7 @@ if [ $commit = 1 ]; then
 	cd "$top"
 	# shellcheck disable=SC2086
 	git add -- $FILES it87.UPSTREAM
-	git commit -q -m "$subject" -m "$body" -- $FILES it87.UPSTREAM
+	git commit -q -s -m "$subject" -m "$body" -- $FILES it87.UPSTREAM
 	echo
 	git log -1 --oneline
 fi

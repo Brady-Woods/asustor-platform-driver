@@ -130,7 +130,7 @@ The following DMI system-manufacturer / system-product-name combinations are cur
 ## Installation
 
 ```
-git clone https://github.com/mafredri/asustor-platform-driver
+git clone https://github.com/Brady-Woods/asustor-platform-driver
 cd asustor-platform-driver
 make
 sudo make install
@@ -140,7 +140,7 @@ sudo make install
 Include the platform drivers in your `flake.nix` as follows:
 ```
 {
-  inputs.asustor-platform-driver.url = "github:mafredri/asustor-platform-driver";
+  inputs.asustor-platform-driver.url = "github:Brady-Woods/asustor-platform-driver";
   # optional, not necessary for the module
   #inputs.asustor-platform-driver.inputs.nixpkgs.follows = "nixpkgs";
 
@@ -520,8 +520,9 @@ the BIOS set it. They apply to every chip `it87` finds.
 *Notes:* ASUSTOR's firmware writes 0x10 to register 0x1D of bank 2 (`0x21D` in `it87`, the
 temperature sources of temp1 and temp2) and sets bit 1 of register 0x51 (temp2 is a thermal
 diode) before every reading; doing the same on an AS6704T made temp2 read 37 °C. `temp_type` and
-`temp_source` do exactly that. The parameters themselves haven't been tested on hardware yet
-(including whether the fan alarms of `fan2` and `fan3` really clear with a minimum of 0 RPM).
+`temp_source` do exactly that. Tested on an AS6704T after a reboot (so with the BIOS's register
+values): temp2 reads the system temperature, every alarm except `intrusion0_alarm` clears (including
+`fan2`/`fan3` with a minimum of 0 RPM), and `pwm1` is the only PWM output left.
 
 ### Override detection of ASUSTOR device by `asustor` kernel module
 
