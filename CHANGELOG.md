@@ -20,6 +20,9 @@ based on upstream `main` as of December 2025 (cb392fc).
 - CONTRIBUTING.md: how to report bugs, coding style, commit format with
   `Signed-off-by` (DCO), the vendored `it87` and the release process.
 - Issue forms for bug reports and feature requests, and a pull request template.
+- CI (GitHub Actions): builds the modules against the headers of the runner's
+  kernel with `-Werror` (and reports `W=1` warnings), and runs `checkpatch.pl
+  --strict` on the commits of pull requests.
 
 ### Changed
 

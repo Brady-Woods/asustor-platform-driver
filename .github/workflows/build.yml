@@ -1,0 +1,145 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # checkpatch.pl and its data files come from this Linux release.
+  LINUX_TAG: v7.2
+
+jobs:
+  build:
+    name: Build modules
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install kernel headers
+        run: |
+          sudo apt-get update -q
+          if sudo apt-get install -y -q --no-install-recommends "linux-headers-$(uname -r)"; then
+            kver=$(uname -r)
+          else
+            echo "::warning::No headers for the runner's kernel $(uname -r), using linux-headers-generic"
+            sudo apt-get install -y -q --no-install-recommends linux-headers-generic
+            kver=$(ls -d /lib/modules/*-generic/build | sort -V | tail -n 1 | cut -d/ -f4)
+          fi
+          kdir=/lib/modules/$kver/build
+          if [ ! -f "$kdir/Makefile" ]; then
+            echo "::error::No kernel build directory $kdir"
+            exit 1
+          fi
+          # Build with the gcc version the kernel was built with: Kbuild only
+          # warns about another one, but the kernel's flags may need it.
+          cc=gcc
+          gccver=$(sed -n 's/^CONFIG_GCC_VERSION=\([0-9]*\)[0-9]\{4\}$/\1/p' "$kdir/.config")
+          if [ -n "$gccver" ] && [ "$(gcc -dumpversion | cut -d. -f1)" != "$gccver" ]; then
+            sudo apt-get install -y -q --no-install-recommends "gcc-$gccver"
+            cc=gcc-$gccver
+          fi
+          echo "KVER=$kver" >> "$GITHUB_ENV"
+          echo "KCC=$cc" >> "$GITHUB_ENV"
+          echo "Building for $kver with $("$cc" --version | head -n 1)"
+
+      - name: Build (warnings are errors)
+        run: make TARGET="$KVER" CC="$KCC" KCFLAGS=-Werror
+
+      - name: Show module info
+        run: |
+          for m in *.ko; do
+            modinfo "$m" | grep -E '^(filename|version|vermagic):'
+          done
+
+      # W=1 enables extra warnings, e.g. kernel-doc warnings; some are known
+      # (asustor_gpl2.c), so they're only reported, in the job summary.
+      - name: Build with W=1 (not fatal)
+        continue-on-error: true
+        run: |
+          make clean TARGET="$KVER" >/dev/null
+          make TARGET="$KVER" CC="$KCC" W=1 2>&1 | tee w1.log
+          warnings=$(grep -E ': (warning|error):' w1.log | sort -u || true)
+          {
+            echo "### W=1 build ($KVER)"
+            if [ -n "$warnings" ]; then
+              echo '```'
+              echo "$warnings"
+              echo '```'
+            else
+              echo "No warnings."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$warnings" ]; then
+            while IFS= read -r w; do
+              echo "::warning::W=1: $w"
+            done <<< "$warnings"
+          fi
+
+  checkpatch:
+    name: checkpatch
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fetch checkpatch.pl from Linux ${{ env.LINUX_TAG }}
+        run: |
+          dir=$RUNNER_TEMP/linux
+          for f in scripts/checkpatch.pl scripts/spelling.txt \
+                   scripts/const_structs.checkpatch \
+                   Documentation/dev-tools/checkpatch.rst; do
+            curl -fsSL --retry 3 --create-dirs -o "$dir/$f" \
+              "https://raw.githubusercontent.com/torvalds/linux/$LINUX_TAG/$f"
+          done
+          chmod +x "$dir/scripts/checkpatch.pl"
+          echo "CHECKPATCH=$dir/scripts/checkpatch.pl" >> "$GITHUB_ENV"
+
+      # Every commit of the pull request is checked as a patch, so only the
+      # lines it changes are checked: the vendored it87.c keeps upstream's
+      # style elsewhere. Co-authored-by: is GitHub's trailer, not a kernel
+      # tag, so it's dropped first. There's no MAINTAINERS file to update.
+      - name: Run checkpatch on the pull request's commits
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          status=0
+          for c in $(git rev-list --reverse --no-merges "$BASE..$HEAD"); do
+            subject=$(git log -1 --format=%s "$c")
+            pathspec=(.)
+            ignore=FILE_PATH_CHANGES
+            case "$subject" in
+            "it87: import frankcrawford/it87"*)
+              # tools/sync-it87.sh imports: upstream's code and commit ids
+              pathspec+=(':(exclude)it87.c' ':(exclude)compat.h')
+              ignore+=,GIT_COMMIT_ID
+              ;;
+            esac
+            echo "::group::$(git log -1 --format=%h "$c") $subject"
+            ok=1
+            git format-patch --stdout "$c^..$c" -- "${pathspec[@]}" |
+              sed '/^Co-authored-by:/Id' |
+              "$CHECKPATCH" --strict --no-tree --show-types --ignore "$ignore" - ||
+              ok=0
+            echo "::endgroup::"
+            if [ "$ok" = 0 ]; then
+              echo "::error::checkpatch found problems in: $subject"
+              status=1
+            fi
+          done
+          exit $status
