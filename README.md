@@ -104,6 +104,7 @@ The following DMI system-manufacturer / system-product-name combinations are cur
 - Power (`/sys/class/leds/power:*`)
   - LCD
   - Front panel
+- Power settings (AC power loss, EuP), see [below](#power-settings-ac-power-loss-and-eup)
 
 ## Installation
 
@@ -202,6 +203,26 @@ On other devices, all disk LEDs use `disk-activity`, which blinks them all for a
 Note that currently the disk-related triggers (like `disk-activity`) do **not** work with NVME drives.
 That's a general limitation of the Linux kernel that is independent of this project.
 If this feature is ever implemented in the kernel, it will automatically work with this driver.
+
+### Power settings: AC power loss and EuP
+
+On devices with the IT8625E chip (e.g. AS6704T), the driver shows two power settings
+that are otherwise only in the BIOS setup (and ADM), in `/sys/devices/platform/asustor/`:
+
+- `ac_power_resume`: what the device does when AC power comes back after it was lost:
+  `off` (stay off), `last` (restore the state from before the power loss) or `on` (always power on).
+  `on` also sets bits of a "power on delay" field, like ASUSTOR's firmware does.
+- `eup`: the EuP (low power when off) mode, `1` (on) or `0` (off). If the register holds a value
+  other than the two ASUSTOR's firmware uses, it reads as `unknown (0x..)` and can't be written.
+  With EuP on, the device very likely can't be woken from "off" by Wake-on-LAN or the RTC alarm.
+
+Both are read-only, unless the module parameter `allow_power_config=1` is set when loading the
+driver (e.g. `options asustor allow_power_config=1` in `/etc/modprobe.d/asustor.conf`), then
+root can write them, e.g. `echo last | sudo tee /sys/devices/platform/asustor/ac_power_resume`.
+
+*Note:* The register values and the meaning of the settings are from disassembling ASUSTOR's
+firmware, not from a datasheet. The BIOS may set them again from its own setup when booting, so
+a written value might only last until the next boot (not verified).
 
 ### `it87` and PWM polarity
 

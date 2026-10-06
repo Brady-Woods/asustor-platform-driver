@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * asustor_main.c - main part of asustor.ko, a platform driver for ASUSTOR NAS hardware
- *                  (the other part is in asustor_gpl2.c which is GPL-2.0-only)
+ *                  (the other parts are in asustor_gpl2.c which is GPL-2.0-only, and
+ *                  asustor_power.c)
  *
  * Copyright (C) 2021 Mathias Fredriksson <mafredri@gmail.com>
  */
@@ -1012,6 +1013,10 @@ static bool pci_devices_match(const struct asustor_driver_data *sys)
 // implemented in asustor_gpl2.c
 extern bool asustor_dmi_matches(const struct dmi_system_id *dmi);
 
+// power settings in /sys/devices/platform/asustor/, implemented in asustor_power.c
+extern int asustor_power_init(void);
+extern void asustor_power_exit(void);
+
 // find out which ASUSTOR system this is, based on asustor_systems[], including
 // their linked asustor_driver_data's pci_matches
 // returns NULL if this isn't a known system
@@ -1169,6 +1174,11 @@ static int __init asustor_init(void)
 		goto err_disk_bays;
 	}
 
+	// optional, so the LEDs and buttons still work if this fails
+	ret = asustor_power_init();
+	if (ret)
+		pr_warn("power settings not available: %d\n", ret);
+
 	return 0;
 
 err_disk_bays:
@@ -1185,6 +1195,7 @@ err:
 
 static void __exit asustor_cleanup(void)
 {
+	asustor_power_exit();
 	platform_device_unregister(asustor_leds_pdev);
 	platform_device_unregister(asustor_keys_pdev);
 	asustor_disk_bays_exit();
