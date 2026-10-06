@@ -54,7 +54,7 @@ back to tracking upstream `main`.
   - Fan speed regulation via `pwm1`
     - See [`example/fancontrol`](./example/fancontrol) for an example `/etc/fancontrol` config for a AS62 system
     - `pwm1` etc should be in `/sys/devices/platform/it87.*/hwmon/hwmon*/`
-  - Front panel LED brightness adjustment via `pwm3`
+  - Front panel LED brightness adjustment, see [below](#front-panel-led-brightness)
 
 ## Compatibility
 
@@ -370,6 +370,35 @@ active low polarity, so on a device whose firmware chose active high it would in
 
 Tested on an AS6704T: with `force_pwm=1`, `pwm1` = 255, 153 and 100 give 2606, 1785 and 1271 RPM.
 
+### Front panel LED brightness
+
+On the AS6704T, the brightness of the front panel LEDs (power, status, LAN and USB, but not the
+drive bay LEDs) is set by the IT8625E's PWM3 output, which `it87` shows as `pwm3`, like a fan.
+It's inverted (ASUSTOR's firmware sets the duty cycle to 255 minus the brightness, so `pwm3` = 255
+means the LEDs are off), and fan control tools take it for a fan. With the `it87` parameters
+`led_pwm=3 led_pwm_invert=1`, it's an LED called `front_panel::brightness` instead, and there's no
+`pwm3`:
+```
+# /etc/modprobe.d/it87.conf
+options it87 force_pwm=1 led_pwm=3 led_pwm_invert=1
+```
+```
+cat /sys/class/leds/front_panel::brightness/brightness
+echo 76 | sudo tee /sys/class/leds/front_panel::brightness/brightness
+```
+- The brightness goes from 0 (front panel LEDs off) to 255 (full brightness). ASUSTOR's firmware
+  defaults to 30 % (76); the BIOS sets about 80 % (204, `pwm3` = 51). Loading `it87` keeps the
+  current brightness, and unloading it leaves the LEDs as they are.
+- `it87` keeps the output in manual mode, so the chip's automatic fan control never changes it.
+  The LED doesn't need `force_pwm=1`, that's only for the fans.
+- `led_pwm=N` works for any PWM output of any chip `it87` supports (`led_pwm_invert` defaults to
+  off); `led_pwm_name=` sets another name for the LED.
+- `pwm1_freq` also sets the frequency of PWM3 (they share a clock setting). `fix_pwm_polarity=1`
+  would invert the brightness.
+- ASUSTOR's firmware dims the front panel LEDs like this on most of its x86 models with an IT87
+  chip, but the AS6704T is the only one where it's been checked, and the LED device hasn't been
+  tested on hardware yet.
+
 ### Override detection of ASUSTOR device by `asustor` kernel module
 
 If the `asustor` kernel module doesn't detect your device correctly, you can force it to treat your
@@ -426,6 +455,10 @@ NOTE: If `gpioinfo` does not return anything, you may need to figure out which (
 ## TODO
 
 - Support variable amount of disk LEDs
+- IT8625E temperatures: `temp1`-`temp3` read -128 °C on the AS6704T. ASUSTOR's firmware sets
+  register 0x1D of bank 2 (`0x21D` in `it87`) to 0x10 and bit 1 of EC register 0x51 (temp2 is then
+  a thermal diode), and reads temp2 as the system temperature. Try that on hardware before adding it
+  to `it87`.
 - ~~Create a new led trigger driver so that we can blink disk LEDs individually, the existing `disk-activity` trigger always blinks all LEDs on activity from any disk~~
   - Pray that [[PATCH v13 0/2] Introduce block device LED trigger](https://lore.kernel.org/lkml/20221227225226.546489-1-arequipeno@gmail.com/T/#mc8758efa18e1b7ed51a50c298d881a2e91280b1f)
     by Ian Pilcher lands in the linux kernel

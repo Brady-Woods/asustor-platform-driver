@@ -81,6 +81,7 @@
 #include <asm/irqflags.h>
 #include <linux/acpi.h>
 #include <linux/io.h>
+#include <linux/leds.h>
 #include "compat.h"
 
 /* Defines fallbacks for processor models */
@@ -328,6 +329,11 @@ static bool update_vbat;
 /* Not all BIOSes properly configure the PWM registers */
 static bool fix_pwm_polarity;
 static bool force_pwm;
+
+/* PWM output driven as an LED instead of a fan control, see it87_led_pwm */
+static int led_pwm;
+static bool led_pwm_invert;
+static char *led_pwm_name = "front_panel::brightness";
 
 /* Many IT87 constants specified below */
 
@@ -1181,6 +1187,9 @@ struct it87_data {
 	bool has_noise;
 	bool noise_pin_saved;
 	u8 noise_pin_reg;
+
+	/* PWM output driven as an LED (led_pwm parameter), or NULL */
+	struct it87_led_pwm *led;
 };
 
 struct gigabyte_smi_regs {
@@ -6816,6 +6825,226 @@ static int it87_check_pwm(struct device *dev)
 	return 1;
 }
 
+/*
+ * Some boards use a PWM output of the chip as a dimmer rather than a fan
+ * control. With led_pwm=N, PWM output N is not exposed as hwmon pwmN (where
+ * fan control tools would take it for a fan) but as an LED class device,
+ * named after led_pwm_name, with brightness 0 (off) to 255. The output is
+ * kept in manual (software) mode, so the chip's automatic fan control never
+ * takes it over, and it is left as it is when the driver is unloaded.
+ * led_pwm_invert maps brightness 255 to duty cycle 0, for outputs that dim
+ * the LEDs as the duty cycle goes up.
+ *
+ * Example: the ASUSTOR AS6704T (IT8625E) dims its front panel LEDs with PWM3,
+ * inverted (ASUSTOR's firmware writes duty = 255 - brightness), so it uses
+ * led_pwm=3 led_pwm_invert=1.
+ *
+ * The inversion is relative to the PWM polarity that the BIOS set up
+ * (FAN_CTL bit 7, shared by all outputs), which fix_pwm_polarity changes.
+ * Only the first chip that is found gets the LED.
+ */
+#if IS_ENABLED(CONFIG_LEDS_CLASS)
+struct it87_led_pwm {
+	struct led_classdev cdev;
+	struct it87_data *data;
+	int nr;		/* PWM output, 0-based */
+	bool invert;
+	u8 duty;	/* last duty cycle written, register value */
+};
+
+static bool it87_led_pwm_claimed;
+
+static u8 it87_led_pwm_to_duty(const struct it87_led_pwm *led,
+			       enum led_brightness brightness)
+{
+	return pwm_to_reg(led->data,
+			  led->invert ? LED_FULL - brightness : brightness);
+}
+
+static enum led_brightness it87_led_pwm_from_duty(const struct it87_led_pwm *led,
+						  u8 duty)
+{
+	int val = pwm_from_reg(led->data, duty);
+
+	return led->invert ? LED_FULL - val : val;
+}
+
+/* Set the output to manual mode and @duty (register value); needs it87_lock() */
+static void it87_led_pwm_write(struct it87_data *data, int nr, u8 duty)
+{
+	u8 reg;
+
+	reg = data->read(data, data->REG_PWM[nr]);
+	if (has_newer_autopwm(data)) {
+		/* bit 7 clear: manual mode, keep the temperature mapping */
+		if (reg & 0x80)
+			data->write(data, data->REG_PWM[nr], reg & 0x7f);
+		data->write(data, IT87_REG_PWM_DUTY[nr], duty);
+	} else {
+		/* bit 7 clear: manual mode, bits 6-0: duty cycle */
+		data->write(data, data->REG_PWM[nr], duty & 0x7f);
+	}
+
+	/* PWM (SmartGuardian) output instead of on/off */
+	if (nr < 3 && has_fanctl_onoff(data)) {
+		reg = data->read(data, IT87_REG_FAN_MAIN_CTRL);
+		if (!(reg & BIT(nr)))
+			data->write(data, IT87_REG_FAN_MAIN_CTRL, reg | BIT(nr));
+	}
+}
+
+static int it87_led_pwm_set(struct led_classdev *cdev,
+			    enum led_brightness brightness)
+{
+	struct it87_led_pwm *led = container_of(cdev, struct it87_led_pwm, cdev);
+	struct it87_data *data = led->data;
+	int err;
+
+	err = it87_lock(data);
+	if (err)
+		return err;
+
+	led->duty = it87_led_pwm_to_duty(led, brightness);
+	it87_led_pwm_write(data, led->nr, led->duty);
+
+	it87_unlock(data);
+	return 0;
+}
+
+static enum led_brightness it87_led_pwm_get(struct led_classdev *cdev)
+{
+	struct it87_led_pwm *led = container_of(cdev, struct it87_led_pwm, cdev);
+	struct it87_data *data = led->data;
+	u8 duty;
+
+	if (it87_lock(data))
+		return cdev->brightness;
+
+	if (has_newer_autopwm(data))
+		duty = data->read(data, IT87_REG_PWM_DUTY[led->nr]);
+	else
+		duty = data->read(data, data->REG_PWM[led->nr]) & 0x7f;
+
+	it87_unlock(data);
+	return it87_led_pwm_from_duty(led, duty);
+}
+
+static void it87_led_pwm_release(void *arg)
+{
+	it87_led_pwm_claimed = false;
+}
+
+/*
+ * Called by it87_probe() before the hwmon device is registered, so that the
+ * output's pwm attributes are never visible. Problems with the parameters
+ * only cause a warning; the output then stays a hwmon pwm.
+ */
+static int it87_led_pwm_init(struct device *dev, struct it87_data *data,
+			     const struct it87_sio_data *sio_data)
+{
+	struct it87_led_pwm *led;
+	int nr = led_pwm - 1;
+	u8 reg, duty;
+	int err;
+
+	if (!led_pwm || it87_led_pwm_claimed)
+		return 0;
+
+	if (led_pwm < 0 || led_pwm > NUM_AUTO_PWM) {
+		dev_warn(dev, "led_pwm=%d: no such PWM output\n", led_pwm);
+		return 0;
+	}
+	if (sio_data->skip_pwm & BIT(nr)) {
+		dev_warn(dev, "led_pwm=%d: pwm%d is not available\n",
+			 led_pwm, led_pwm);
+		return 0;
+	}
+	if (it87_uses_h2ram_vectors(data, nr) ||
+	    it87_uses_conventional_override(data, nr)) {
+		dev_warn(dev, "led_pwm=%d: not supported on this chip\n",
+			 led_pwm);
+		return 0;
+	}
+	if (!led_pwm_name || !*led_pwm_name) {
+		dev_warn(dev, "led_pwm=%d: led_pwm_name is empty\n", led_pwm);
+		return 0;
+	}
+
+	led = devm_kzalloc(dev, sizeof(*led), GFP_KERNEL);
+	if (!led)
+		return -ENOMEM;
+	led->data = data;
+	led->nr = nr;
+	led->invert = led_pwm_invert;
+
+	/* Switch to manual mode, keeping the current duty cycle */
+	err = it87_lock(data);
+	if (err)
+		return err;
+	reg = data->read(data, data->REG_PWM[nr]);
+	if (has_newer_autopwm(data))
+		duty = data->read(data, IT87_REG_PWM_DUTY[nr]);
+	else if (reg & 0x80)	/* no manual duty cycle to keep */
+		duty = it87_led_pwm_to_duty(led, LED_FULL);
+	else
+		duty = reg & 0x7f;
+	if (reg & 0x80)
+		dev_info(dev, "pwm%d was in automatic mode, switching to manual\n",
+			 led_pwm);
+	led->duty = duty;
+	it87_led_pwm_write(data, nr, duty);
+	it87_unlock(data);
+
+	led->cdev.name = led_pwm_name;
+	led->cdev.max_brightness = LED_FULL;
+	led->cdev.brightness = it87_led_pwm_from_duty(led, duty);
+	led->cdev.brightness_set_blocking = it87_led_pwm_set;
+	led->cdev.brightness_get = it87_led_pwm_get;
+	/* don't switch the LEDs off when the driver is unloaded */
+	led->cdev.flags = LED_RETAIN_AT_SHUTDOWN;
+
+	err = devm_led_classdev_register(dev, &led->cdev);
+	if (err) {
+		dev_warn(dev, "led_pwm=%d: can't register LED %s (%d)\n",
+			 led_pwm, led_pwm_name, err);
+		return 0;
+	}
+
+	it87_led_pwm_claimed = true;
+	err = devm_add_action_or_reset(dev, it87_led_pwm_release, NULL);
+	if (err)
+		return err;
+
+	/* not a fan control */
+	data->has_pwm &= ~BIT(nr);
+	data->led = led;
+
+	dev_info(dev, "pwm%d is LED %s%s\n", led_pwm, led->cdev.name,
+		 led->invert ? " (inverted)" : "");
+	return 0;
+}
+
+/* Restore manual mode and the duty cycle after resume; needs it87_lock() */
+static void it87_led_pwm_resume(struct it87_data *data)
+{
+	if (data->led)
+		it87_led_pwm_write(data, data->led->nr, data->led->duty);
+}
+#else
+static int it87_led_pwm_init(struct device *dev, struct it87_data *data,
+			     const struct it87_sio_data *sio_data)
+{
+	if (led_pwm)
+		dev_warn(dev, "led_pwm=%d: no LED support in this kernel (CONFIG_LEDS_CLASS)\n",
+			 led_pwm);
+	return 0;
+}
+
+static void it87_led_pwm_resume(struct it87_data *data)
+{
+}
+#endif /* IS_ENABLED(CONFIG_LEDS_CLASS) */
+
 static int it87_probe(struct platform_device *pdev)
 {
 	struct it87_data      *data;
@@ -7055,6 +7284,11 @@ static int it87_probe(struct platform_device *pdev)
 				&it87_group_auto_pwm;
 	}
 
+	/* Takes its PWM output out of has_pwm */
+	err = it87_led_pwm_init(dev, data, sio_data);
+	if (err)
+		return err;
+
 	/*
 	 * Match the vendor utility's quirk: VIN3 mux setup is best-effort and
 	 * does not revoke support when configuration mode cannot be entered.
@@ -7161,6 +7395,7 @@ static int it87_resume(struct device *dev)
 		return err;
 
 	pwm_safe = it87_check_pwm(dev);
+	it87_led_pwm_resume(data);
 	it87_check_limit_regs(data);
 	it87_check_voltage_monitors_reset(data);
 	it87_check_tachometers_reset(pdev);
@@ -7615,6 +7850,16 @@ MODULE_PARM_DESC(fix_pwm_polarity,
 module_param(force_pwm, bool, 0);
 MODULE_PARM_DESC(force_pwm,
 		 "Enable PWM interface keeping BIOS active-low polarity (DANGEROUS)");
+
+module_param(led_pwm, int, 0444);
+MODULE_PARM_DESC(led_pwm,
+		 "Drive this PWM output (1-6) as an LED instead of a fan control (default: 0, none)");
+module_param(led_pwm_invert, bool, 0444);
+MODULE_PARM_DESC(led_pwm_invert,
+		 "led_pwm: LED brightness 255 is duty cycle 0 (default: off)");
+module_param(led_pwm_name, charp, 0444);
+MODULE_PARM_DESC(led_pwm_name,
+		 "led_pwm: LED name (default: front_panel::brightness)");
 
 MODULE_LICENSE("GPL");
 MODULE_VERSION(IT87_DRIVER_VERSION);
