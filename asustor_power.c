@@ -2,7 +2,8 @@
 /*
  * asustor_power.c - part of asustor.ko: power settings of the IT8625E Super I/O
  *                   (behaviour after AC power loss, EuP), as sysfs attributes of
- *                   /sys/devices/platform/asustor/
+ *                   /sys/devices/platform/asustor/ (the device is created by
+ *                   asustor_main.c)
  *
  * The register values are from ASUSTOR's firmware (ADM 5.1: It87_Set/Get_*
  * in libgeneraldrv and the /dev/it87 ioctls in its kernel), not from a
@@ -18,7 +19,6 @@
 #include <linux/ioport.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
 #include <linux/string.h>
 #include <linux/sysfs.h>
 
@@ -47,8 +47,7 @@
 #define EC_EUP_OFF 0x0c
 
 // used by asustor_main.c
-int asustor_power_init(void);
-void asustor_power_exit(void);
+const struct attribute_group *asustor_power_init(void);
 
 static bool allow_power_config;
 module_param(allow_power_config, bool, S_IRUSR | S_IRGRP | S_IROTH);
@@ -56,8 +55,6 @@ MODULE_PARM_DESC(
 	allow_power_config,
 	"Make ac_power_resume and eup in /sys/devices/platform/asustor/ "
 	"writable (default: read-only). Only on devices with an IT8625E.");
-
-static struct platform_device *asustor_power_pdev;
 
 // Enters the config mode. The muxed region locks out the other drivers
 // using the Super I/O (asustor_gpio_it87, it87) until asustor_sio_exit().
@@ -263,26 +260,34 @@ static struct attribute *asustor_power_ro_attrs[] = {
 	&asustor_eup_ro.attr,
 	NULL,
 };
-ATTRIBUTE_GROUPS(asustor_power_ro);
+
+static const struct attribute_group asustor_power_ro_group = {
+	.attrs = asustor_power_ro_attrs,
+};
 
 static struct attribute *asustor_power_rw_attrs[] = {
 	&asustor_ac_power_resume_rw.attr,
 	&asustor_eup_rw.attr,
 	NULL,
 };
-ATTRIBUTE_GROUPS(asustor_power_rw);
 
-// Creates /sys/devices/platform/asustor/{ac_power_resume,eup} on devices
-// with an IT8625E (the register meanings are only known for that chip).
-int __init asustor_power_init(void)
+static const struct attribute_group asustor_power_rw_group = {
+	.attrs = asustor_power_rw_attrs,
+};
+
+// Returns the attributes ac_power_resume and eup for the asustor platform
+// device on devices with an IT8625E (the register meanings are only known
+// for that chip), NULL on other devices or if the chip can't be read.
+const struct attribute_group *__init asustor_power_init(void)
 {
-	struct platform_device *pdev;
 	u16 chip_id;
 	int ret;
 
 	ret = asustor_sio_enter();
-	if (ret)
-		return ret;
+	if (ret) {
+		pr_warn("power settings not available: %d\n", ret);
+		return NULL;
+	}
 	chip_id = asustor_sio_inb(SIO_CHIPID) << 8;
 	chip_id |= asustor_sio_inb(SIO_CHIPID + 1);
 	asustor_sio_exit();
@@ -290,29 +295,9 @@ int __init asustor_power_init(void)
 	if (chip_id != IT8625_ID) {
 		pr_info("no IT8625E (chip ID %04x), no power settings\n",
 		        chip_id);
-		return 0;
+		return NULL;
 	}
 
-	pdev = platform_device_alloc("asustor", PLATFORM_DEVID_NONE);
-	if (!pdev)
-		return -ENOMEM;
-	pdev->dev.groups = allow_power_config ? asustor_power_rw_groups :
-	                                        asustor_power_ro_groups;
-
-	ret = platform_device_add(pdev);
-	if (ret) {
-		platform_device_put(pdev);
-		return ret;
-	}
-
-	asustor_power_pdev = pdev;
-	return 0;
-}
-
-void asustor_power_exit(void)
-{
-	if (!asustor_power_pdev)
-		return;
-	platform_device_unregister(asustor_power_pdev);
-	asustor_power_pdev = NULL;
+	return allow_power_config ? &asustor_power_rw_group :
+	                            &asustor_power_ro_group;
 }

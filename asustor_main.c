@@ -12,10 +12,13 @@
 #include <linux/blkdev.h>
 #include <linux/dmi.h>
 #include <linux/errno.h>
+#include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
 #include <linux/gpio/machine.h>
 #include <linux/gpio_keys.h>
+#include <linux/i8253.h>
 #include <linux/input.h>
+#include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/leds.h>
 #include <linux/libata.h>
@@ -24,6 +27,7 @@
 #include <linux/part_stat.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
+#include <linux/reboot.h>
 #include <linux/slab.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
@@ -180,6 +184,9 @@ static struct gpiod_lookup_table asustor_as6704_gpio_leds_lookup = {
 		GPIO_LOOKUP_IDX(GPIO_IT87, 52, NULL, 14, GPIO_ACTIVE_LOW),	// sata3:red:disk
 		GPIO_LOOKUP_IDX(GPIO_IT87, 63, NULL, 15, GPIO_ACTIVE_HIGH),	// sata4:green:disk
 		GPIO_LOOKUP_IDX(GPIO_IT87, 48, NULL, 16, GPIO_ACTIVE_LOW),	// sata4:red:disk
+		// Do NOT add GP72 (line 50) to this or any other table: on AS6704T it is the
+		// (active-low) power of the HDD backplane, for all bays. leds-gpio would claim
+		// it as an output and could switch the disks off.
 		{}
 	},
 };
@@ -248,6 +255,17 @@ static struct gpiod_lookup_table asustor_600_gpio_leds_lookup = {
 		GPIO_LOOKUP_IDX(GPIO_IT87, 21, NULL, 6, GPIO_ACTIVE_LOW),  // blue:usb
 		// 7
 		GPIO_LOOKUP_IDX(GPIO_IT87, 52, NULL, 8, GPIO_ACTIVE_HIGH), // blue:lan
+		{}
+	},
+};
+
+// The buzzer gate, see "The buzzer" below. ASUSTOR's firmware drives GP75 for
+// the buzzer on all its Jasper Lake devices (AS6702T/AS6704T/AS6706T, AS54xxT,
+// FS6706T/FS6712X) and on AS66xx; not tested on hardware yet.
+static struct gpiod_lookup_table asustor_gp75_buzzer_lookup = {
+	.dev_id = "asustor",
+	.table = {
+		GPIO_LOOKUP(GPIO_IT87, 53, "buzzer", GPIO_ACTIVE_HIGH),	// GP75
 		{}
 	},
 };
@@ -378,6 +396,10 @@ struct asustor_driver_data {
 	// NULL if not known for this device, then all sataN:green:disk LEDs
 	// use the "disk-activity" trigger
 	const struct asustor_disk_bays *disk_bays;
+
+	// the buzzer gate GPIO ("buzzer" of the asustor platform device),
+	// NULL if not known for this device
+	struct gpiod_lookup_table *buzzer;
 };
 
 #define VALID_OVERRIDE_NAMES                                                   \
@@ -411,8 +433,9 @@ static struct asustor_driver_data asustor_as6702_driver_data = {
 		// Both AS6702T and AS5402T use this SATA controller (the other devices don't)
 		{ 0x8086, 0x4dd3, 1, 1 }
 	},
-	.leds = &asustor_as6702_gpio_leds_lookup,
-	.keys = &asustor_6100_gpio_keys_lookup,
+	.leds   = &asustor_as6702_gpio_leds_lookup,
+	.keys   = &asustor_6100_gpio_keys_lookup,
+	.buzzer = &asustor_gp75_buzzer_lookup,
 };
 
 static const struct asustor_usb_led asustor_as6704_usb_led = {
@@ -445,6 +468,7 @@ static struct asustor_driver_data asustor_as6704_driver_data = {
 	.keys      = &asustor_6100_gpio_keys_lookup,
 	.usb_led   = &asustor_as6704_usb_led,
 	.disk_bays = &asustor_as6704_disk_bays,
+	.buzzer    = &asustor_gp75_buzzer_lookup,
 };
 
 static struct asustor_driver_data asustor_as6706_driver_data = {
@@ -457,8 +481,9 @@ static struct asustor_driver_data asustor_as6706_driver_data = {
 		//  which thankfully is NOT the same one that FS6712 uses. Also it allows replacing the
 		//  m.2 NVME slots with a 10Gbit NIC, could be that then the packet switch goes away, IDK)
 	},
-	.leds = &asustor_as6706_gpio_leds_lookup,
-	.keys = &asustor_6100_gpio_keys_lookup,
+	.leds   = &asustor_as6706_gpio_leds_lookup,
+	.keys   = &asustor_6100_gpio_keys_lookup,
+	.buzzer = &asustor_gp75_buzzer_lookup,
 };
 
 static struct asustor_driver_data asustor_fs6712_driver_data = {
@@ -470,8 +495,9 @@ static struct asustor_driver_data asustor_fs6712_driver_data = {
 		// one of these exist; upper limit doesn't matter, so just use DEVICE_COUNT_MAX
 		{ 0x1b21, 0x2806, 1, DEVICE_COUNT_MAX },
 	},
-	.leds = &asustor_fs6700_gpio_leds_lookup,
-	.keys = &asustor_fs6700_gpio_keys_lookup,
+	.leds   = &asustor_fs6700_gpio_leds_lookup,
+	.keys   = &asustor_fs6700_gpio_keys_lookup,
+	.buzzer = &asustor_gp75_buzzer_lookup,
 };
 
 static struct asustor_driver_data asustor_fs6706_driver_data = {
@@ -484,8 +510,9 @@ static struct asustor_driver_data asustor_fs6706_driver_data = {
 		{ 0x1b21, 0x1164, 0, 0 }, // .. neither the ASMedia one used by AS6704T
 		{ 0x1b21, 0x1166, 0, 0 }, // .. nor the ASMedia one used by AS6706T
 	},
-	.leds = &asustor_fs6700_gpio_leds_lookup,
-	.keys = &asustor_fs6700_gpio_keys_lookup,
+	.leds   = &asustor_fs6700_gpio_leds_lookup,
+	.keys   = &asustor_fs6700_gpio_keys_lookup,
+	.buzzer = &asustor_gp75_buzzer_lookup,
 };
 
 /*
@@ -504,8 +531,9 @@ static struct asustor_driver_data asustor_6600_driver_data = {
 
 	// the LED GPIOs are the same as in AS67xx, so use the one from AS6704 which should work for
 	// both AS6602T and AS6604T (an AS66xx with more than 4 drives doesn't seem to exist)
-	.leds = &asustor_as6704_gpio_leds_lookup,
-	.keys = &asustor_6100_gpio_keys_lookup,
+	.leds   = &asustor_as6704_gpio_leds_lookup,
+	.keys   = &asustor_6100_gpio_keys_lookup,
+	.buzzer = &asustor_gp75_buzzer_lookup,
 };
 
 static struct asustor_driver_data asustor_6100_driver_data = {
@@ -1014,8 +1042,7 @@ static bool pci_devices_match(const struct asustor_driver_data *sys)
 extern bool asustor_dmi_matches(const struct dmi_system_id *dmi);
 
 // power settings in /sys/devices/platform/asustor/, implemented in asustor_power.c
-extern int asustor_power_init(void);
-extern void asustor_power_exit(void);
+extern const struct attribute_group *asustor_power_init(void);
 
 // find out which ASUSTOR system this is, based on asustor_systems[], including
 // their linked asustor_driver_data's pci_matches
@@ -1055,6 +1082,301 @@ MODULE_PARM_DESC(
 	force_device,
 	"Don't try to detect ASUSTOR device, use the given one instead. "
 	"Valid values: " VALID_OVERRIDE_NAMES);
+
+// The buzzer.
+// The buzzer of these devices is the PC speaker: PIT channel 2, switched to
+// the speaker by bits 0-1 of port 0x61, which is what the kernel's pcspkr
+// driver and ASUSTOR's own buzzer driver (asbuzzer_js) program. But it only
+// sounds while the buzzer gate GPIO (GP75) is high: ASUSTOR's firmware sets it
+// before every beep and clears it afterwards.
+//
+// So asustor has its own input device for the buzzer, "ASUSTOR Buzzer", whose
+// event() callback plays tones like pcspkr's (asustor_buzzer_play()) and opens
+// the gate while one plays. Like for any input device with EV_SND, tones come
+// from:
+// - EV_SND events written to its event device (e.g. by `beep -e`):
+//   evdev_write() -> input_inject_event() (drivers/input/evdev.c),
+// - the console bell ("\a" on a VT) and the KDMKTONE ioctl: kd_mksound()
+//   sends SND_TONE (and SND_BELL to stop) to every EV_SND device the keyboard
+//   handler is connected to, with input_inject_event() (kd_sound_helper(),
+//   kbd_ids[] and kbd_match() in drivers/tty/vt/keyboard.c).
+// The input core passes supported EV_SND events to event() right away
+// (input_get_disposition() returns INPUT_PASS_TO_ALL for them, and
+// input_event_dispose() calls dev->event), with dev->event_lock held and
+// interrupts off. It also calls event() with value 0 on suspend and before
+// hibernation's power off (input_dev_toggle() from input_dev_suspend() and
+// input_dev_poweroff()), and with the previous value on resume.
+// (drivers/input/input.c in Linux 6.1, 6.6, 6.12 and 6.17.)
+//
+// pcspkr's "PC Speaker" device still exists and plays on the same PIT channel,
+// but stays silent since nothing opens the gate for it. Both drivers take
+// i8253_lock for each change, so their register writes never interleave; if
+// both play at once, the last change wins (a stop from either silences both).
+
+static bool buzzer = true;
+module_param(buzzer, bool, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(
+	buzzer,
+	"Register the \"ASUSTOR Buzzer\" input device, which plays tones on the "
+	"PC speaker and opens the buzzer gate while they play (default). If "
+	"false, the buzzer gate GPIO is left alone. Only on devices with a known "
+	"buzzer gate, see buzzer_gate in /sys/devices/platform/asustor/.");
+
+// /sys/devices/platform/asustor/buzzer_gate, only on devices with a known
+// buzzer gate. "active": the GPIO is claimed and the input device registered,
+// "disabled": buzzer=0, "unavailable": setting it up failed (see dmesg).
+static const char *asustor_buzzer_status;
+static struct gpio_desc *asustor_buzzer_gpio;
+static struct input_dev *asustor_buzzer_input;
+static bool asustor_buzzer_tone;     // is a tone playing (gate open)?
+static bool asustor_buzzer_shutdown; // rebooting or powering off: keep closed
+static struct work_struct asustor_buzzer_work;
+
+// Plays a tone with a period of count PIT ticks on the PC speaker, or stops it
+// if count is 0. Exactly what pcspkr_event() in drivers/input/misc/pcspkr.c
+// does (the same in Linux 6.1 to 6.17), including the locking: the PIT is
+// shared with pcspkr, snd-pcsp and the kernel's PIT code, which all program
+// it under i8253_lock. Like pcspkr, this doesn't request the I/O ports.
+static void asustor_buzzer_play(unsigned int count)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&i8253_lock, flags);
+
+	if (count) {
+		// set command for counter 2, 2 byte write
+		outb_p(0xB6, 0x43);
+		// select desired HZ
+		outb_p(count & 0xff, 0x42);
+		outb((count >> 8) & 0xff, 0x42);
+		// enable counter 2
+		outb_p(inb_p(0x61) | 3, 0x61);
+	} else {
+		// disable counter 2
+		outb(inb_p(0x61) & 0xFC, 0x61);
+	}
+
+	raw_spin_unlock_irqrestore(&i8253_lock, flags);
+}
+
+// The IT87 GPIO can sleep, so the gate is set from a work item. It sets the
+// latest state, so if several tone changes come in before it runs, the last
+// one wins. The gate therefore opens a little after the tone starts.
+static void asustor_buzzer_work_fn(struct work_struct *work)
+{
+	gpiod_set_value_cansleep(asustor_buzzer_gpio,
+	                         READ_ONCE(asustor_buzzer_tone) &&
+	                                 !READ_ONCE(asustor_buzzer_shutdown));
+}
+
+// The input device's event() callback, see "The buzzer" above for who calls
+// it. Runs in atomic context, so the gate is only queued to change.
+static int asustor_buzzer_event(struct input_dev *dev, unsigned int type,
+                                unsigned int code, int value)
+{
+	unsigned int count = 0;
+
+	// the same as pcspkr_event(): SND_BELL is 1000 Hz, SND_TONE the given
+	// frequency in Hz, 0 (or one out of range) stops the tone
+	if (type != EV_SND)
+		return -EINVAL;
+
+	switch (code) {
+	case SND_BELL:
+		if (value)
+			value = 1000;
+		break;
+	case SND_TONE:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (value > 20 && value < 32767)
+		count = PIT_TICK_RATE / value;
+
+	asustor_buzzer_play(count);
+
+	WRITE_ONCE(asustor_buzzer_tone, count != 0);
+	schedule_work(&asustor_buzzer_work);
+	return 0;
+}
+
+// Silences the buzzer before a reboot or power off, like pcspkr's shutdown()
+// callback (the input core only does that for suspend and hibernation), and
+// closes the gate for good: idle low, as ADM leaves it, in case the IT87
+// keeps its state over a reboot. Tones played after this stay silent.
+static int asustor_buzzer_reboot(struct notifier_block *nb,
+                                 unsigned long action, void *data)
+{
+	WRITE_ONCE(asustor_buzzer_shutdown, true);
+	asustor_buzzer_play(0);
+	cancel_work_sync(&asustor_buzzer_work);
+	gpiod_set_value_cansleep(asustor_buzzer_gpio, 0);
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block asustor_buzzer_reboot_nb = {
+	.notifier_call = asustor_buzzer_reboot,
+};
+
+static ssize_t buzzer_gate_show(struct device *dev,
+                                struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%s\n", asustor_buzzer_status);
+}
+static DEVICE_ATTR_RO(buzzer_gate);
+
+static struct attribute *asustor_buzzer_attrs[] = {
+	&dev_attr_buzzer_gate.attr,
+	NULL,
+};
+
+static const struct attribute_group asustor_buzzer_group = {
+	.attrs = asustor_buzzer_attrs,
+};
+
+// Claims the buzzer gate GPIO of dev (the asustor platform device) and
+// registers the "ASUSTOR Buzzer" input device as its child. Optional: if this
+// fails, there is no buzzer.
+static void __init asustor_buzzer_init(struct device *dev)
+{
+	struct input_dev *input;
+	struct gpio_desc *gpio;
+	int ret, base;
+
+	if (!buzzer) {
+		asustor_buzzer_status = "disabled";
+		pr_info("buzzer disabled (buzzer=0)\n");
+		return;
+	}
+	asustor_buzzer_status = "unavailable";
+
+	gpiod_add_lookup_table(driver_data->buzzer);
+	gpio = gpiod_get(dev, "buzzer", GPIOD_OUT_LOW);
+	if (IS_ERR(gpio)) {
+		ret  = PTR_ERR(gpio);
+		base = get_gpio_base_for_chipname(GPIO_IT87);
+		if (ret == -EBUSY)
+			pr_warn("buzzer gate GPIO (%s line 53, gpio %d) is already in use, e.g. exported in /sys/class/gpio by a script: unexport it and reload asustor, no buzzer until then\n",
+			        GPIO_IT87, base >= 0 ? base + 53 : -1);
+		else if (ret == -EPROBE_DEFER)
+			pr_warn("no buzzer: GPIO chip %s not found (module not loaded?)\n",
+			        GPIO_IT87);
+		else
+			pr_warn("no buzzer: getting the buzzer gate GPIO failed: %d\n",
+			        ret);
+		goto err_lookup;
+	}
+	asustor_buzzer_gpio = gpio;
+	INIT_WORK(&asustor_buzzer_work, asustor_buzzer_work_fn);
+
+	input = input_allocate_device();
+	if (!input) {
+		ret = -ENOMEM;
+		goto err_input;
+	}
+	input->name       = "ASUSTOR Buzzer";
+	input->phys       = "asustor/input0";
+	input->id.bustype = BUS_HOST;
+	input->dev.parent = dev;
+	input->evbit[0]   = BIT_MASK(EV_SND);
+	input->sndbit[0]  = BIT_MASK(SND_BELL) | BIT_MASK(SND_TONE);
+	input->event      = asustor_buzzer_event;
+
+	ret = input_register_device(input);
+	if (ret) {
+		input_free_device(input);
+		goto err_input;
+	}
+	asustor_buzzer_input = input;
+
+	// can't fail (always returns 0)
+	register_reboot_notifier(&asustor_buzzer_reboot_nb);
+
+	asustor_buzzer_status = "active";
+	pr_info("buzzer: \"%s\" is %s\n", input->name, dev_name(&input->dev));
+	return;
+
+err_input:
+	pr_warn("no buzzer: registering the input device failed: %d\n", ret);
+	gpiod_put(asustor_buzzer_gpio);
+	asustor_buzzer_gpio = NULL;
+err_lookup:
+	gpiod_remove_lookup_table(driver_data->buzzer);
+}
+
+static void asustor_buzzer_exit(void)
+{
+	if (!asustor_buzzer_input)
+		return;
+
+	unregister_reboot_notifier(&asustor_buzzer_reboot_nb);
+	// The input core doesn't call asustor_buzzer_event() once this returns.
+	input_unregister_device(asustor_buzzer_input);
+	asustor_buzzer_input = NULL;
+	// turn off the speaker, like pcspkr_remove()
+	asustor_buzzer_play(0);
+	cancel_work_sync(&asustor_buzzer_work);
+	gpiod_set_value_cansleep(asustor_buzzer_gpio, 0);
+	gpiod_put(asustor_buzzer_gpio);
+	asustor_buzzer_gpio = NULL;
+	gpiod_remove_lookup_table(driver_data->buzzer);
+}
+
+// The asustor platform device: /sys/devices/platform/asustor/ has the power
+// settings (asustor_power.c) and buzzer_gate, and it's the consumer of the
+// buzzer gate GPIO and the parent of the buzzer's input device. Only created
+// if the device has either.
+static struct platform_device *asustor_pdev;
+static const struct attribute_group *asustor_pdev_groups[3];
+
+static int __init asustor_pdev_init(void)
+{
+	const struct attribute_group *power = asustor_power_init();
+	struct platform_device *pdev;
+	int ret, n = 0;
+
+	if (power)
+		asustor_pdev_groups[n++] = power;
+	if (driver_data->buzzer)
+		asustor_pdev_groups[n++] = &asustor_buzzer_group;
+	if (n == 0)
+		return 0;
+
+	pdev = platform_device_alloc("asustor", PLATFORM_DEVID_NONE);
+	if (!pdev)
+		return -ENOMEM;
+	pdev->dev.groups = asustor_pdev_groups;
+
+	// The buzzer's input device is a child of this device, so it can only be
+	// registered once this device is added. Hold back the device's "add"
+	// uevent until then (like device_add_disk() does), so buzzer_gate has
+	// its final value when userspace learns about the device.
+	dev_set_uevent_suppress(&pdev->dev, true);
+	ret = platform_device_add(pdev);
+	if (ret) {
+		platform_device_put(pdev);
+		return ret;
+	}
+
+	if (driver_data->buzzer)
+		asustor_buzzer_init(&pdev->dev);
+
+	dev_set_uevent_suppress(&pdev->dev, false);
+	kobject_uevent(&pdev->dev.kobj, KOBJ_ADD);
+
+	asustor_pdev = pdev;
+	return 0;
+}
+
+static void asustor_pdev_exit(void)
+{
+	asustor_buzzer_exit();
+	if (asustor_pdev)
+		platform_device_unregister(asustor_pdev);
+	asustor_pdev = NULL;
+}
 
 static int __init asustor_init(void)
 {
@@ -1175,9 +1497,10 @@ static int __init asustor_init(void)
 	}
 
 	// optional, so the LEDs and buttons still work if this fails
-	ret = asustor_power_init();
+	ret = asustor_pdev_init();
 	if (ret)
-		pr_warn("power settings not available: %d\n", ret);
+		pr_warn("failed registering the asustor device (power settings, buzzer gate): %d\n",
+		        ret);
 
 	return 0;
 
@@ -1195,7 +1518,7 @@ err:
 
 static void __exit asustor_cleanup(void)
 {
-	asustor_power_exit();
+	asustor_pdev_exit();
 	platform_device_unregister(asustor_leds_pdev);
 	platform_device_unregister(asustor_keys_pdev);
 	asustor_disk_bays_exit();

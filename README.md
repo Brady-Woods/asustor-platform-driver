@@ -104,6 +104,7 @@ The following DMI system-manufacturer / system-product-name combinations are cur
 - Power (`/sys/class/leds/power:*`)
   - LCD
   - Front panel
+- Buzzer (AS66xx, AS67xx, AS54xx, FS67xx) as the "ASUSTOR Buzzer" input device, see [below](#buzzer)
 - Power settings (AC power loss, EuP), see [below](#power-settings-ac-power-loss-and-eup)
 
 ## Installation
@@ -203,6 +204,60 @@ On other devices, all disk LEDs use `disk-activity`, which blinks them all for a
 Note that currently the disk-related triggers (like `disk-activity`) do **not** work with NVME drives.
 That's a general limitation of the Linux kernel that is independent of this project.
 If this feature is ever implemented in the kernel, it will automatically work with this driver.
+
+### Buzzer
+
+The buzzer is the PC speaker (PIT channel 2, switched on through port 0x61), but it only sounds
+while an IT87 GPIO (GP75, the "buzzer gate") is high: ASUSTOR's firmware sets it before every beep
+and clears it afterwards. The `asustor` module claims that GPIO (low while idle) and registers its
+own input device for the buzzer, **"ASUSTOR Buzzer"**, which plays tones on the PC speaker exactly
+like the kernel's `pcspkr` driver and opens the gate while a tone plays. `pcspkr` isn't needed.
+
+To beep, send `EV_SND` events to its event device. It's `/dev/input/by-path/platform-asustor-event`
+(from udev's `60-persistent-input.rules`), or find it by name:
+```sh
+grep -l '^ASUSTOR Buzzer$' /sys/class/input/event*/device/name   # .../eventN/device/name -> /dev/input/eventN
+```
+- With the `beep` tool: `beep -e /dev/input/by-path/platform-asustor-event -f 2000 -l 200`.
+  ASUSTOR's firmware beeps at about 2 kHz, 200 ms for a short and 800 ms for a long beep.
+- Or write `struct input_event`s yourself: type `EV_SND` (0x12), code `SND_TONE` (0x02) and the
+  frequency in Hz as value (21 to 32766) starts a tone, value 0 stops it (`SND_BELL`, 0x01, with
+  value 1 plays 1000 Hz). No `SYN_REPORT` is needed. For example in Python:
+  ```python
+  import struct, time
+  def tone(hz): return struct.pack("llHHi", 0, 0, 0x12, 0x02, hz)  # 64-bit struct input_event
+  with open("/dev/input/by-path/platform-asustor-event", "wb", buffering=0) as f:
+      f.write(tone(2000)); time.sleep(0.2); f.write(tone(0))
+  ```
+- The console bell (`printf '\a'` on a virtual console, or the `KDMKTONE` ioctl) beeps too: the
+  kernel sends it to every input device that can play sounds.
+
+`/sys/devices/platform/asustor/buzzer_gate` tells whether the buzzer works. It only exists on
+devices with a known buzzer gate (and with versions of the driver that have it), and reads:
+- `active`: the gate GPIO is claimed and the "ASUSTOR Buzzer" input device is registered,
+- `disabled`: the module parameter `buzzer=0` is set: no input device, the gate GPIO is left alone,
+- `unavailable`: setting it up failed, `dmesg` says why. Usually the GPIO is in use already
+  (`-EBUSY`), e.g. exported through `/sys/class/gpio` by a script: unexport it
+  (`echo <gpio> | sudo tee /sys/class/gpio/unexport`, the number is in the message) and
+  reload `asustor`.
+
+The module parameter `buzzer` (default `1`) can be set to `0` to leave the buzzer alone, e.g. with
+`options asustor buzzer=0` in `/etc/modprobe.d/asustor.conf`.
+
+Notes:
+- The console bell is audible now. `setterm --blength 0` (run on that console) silences it for a
+  virtual console, or load `asustor` with `buzzer=0`.
+- If `pcspkr` is loaded, its "PC Speaker" input device still exists, but stays silent: the gate
+  only opens for "ASUSTOR Buzzer". Both drive the same PIT channel (under the kernel's
+  `i8253_lock`, so they never mix up its registers): if both play at once, the last tone change
+  wins, and either one stopping its tone stops both.
+- The gate GPIO is set from a work item (the IT87 GPIO driver can sleep), so it opens a fraction
+  of a millisecond to a few milliseconds after the tone starts; very short tones may be cut short
+  or not sound at all.
+- The tone stops and the gate closes when `asustor` is unloaded and before a reboot or power off;
+  on suspend the kernel stops the tone.
+- Not tested on hardware yet. GP75 and its polarity are from ASUSTOR's firmware, which drives it on
+  all its Jasper Lake devices and on AS66xx.
 
 ### Power settings: AC power loss and EuP
 
