@@ -70,47 +70,42 @@
 // If ledtrig-blkdev ever lands, use that instead of disk-activity:
 // https://lore.kernel.org/linux-leds/20210819025053.222710-1-arequipeno@gmail.com/
 // Also, the "disk-activity" trigger does (currently?) *not* trigger for NVME devices.
-// Power rails (and blue:lan, which is the front LAN LED rail on some devices) use
-// retain_state_shutdown, so they are not switched off when asustor is unloaded
-// (that would e.g. reboot the LCD's MCU) or at shutdown.
+// The power rails of the LCD and the front panel are not LEDs, the asustor
+// platform device holds them, see "Power rails" below. blue:lan, which is the
+// front LAN LED rail on some devices, uses retain_state_shutdown, so it is not
+// switched off when asustor is unloaded or at shutdown.
 static struct gpio_led asustor_leds[] = {
-	{ .name                  = "power:front_panel",                     // 0
-	  .default_state         = LEDS_GPIO_DEFSTATE_ON,
-	  .retain_state_shutdown = 1 },
-	{ .name                  = "power:lcd",                             // 1
-	  .default_state         = LEDS_GPIO_DEFSTATE_ON,
-	  .retain_state_shutdown = 1 },
-	{ .name = "blue:power", .default_state = LEDS_GPIO_DEFSTATE_ON },   // 2
-	{ .name = "red:power", .default_state = LEDS_GPIO_DEFSTATE_OFF },   // 3
-	{ .name = "green:status", .default_state = LEDS_GPIO_DEFSTATE_ON }, // 4
+	{ .name = "blue:power", .default_state = LEDS_GPIO_DEFSTATE_ON },   // 0
+	{ .name = "red:power", .default_state = LEDS_GPIO_DEFSTATE_OFF },   // 1
+	{ .name = "green:status", .default_state = LEDS_GPIO_DEFSTATE_ON }, // 2
 	{
-		.name            = "red:status",                            // 5
+		.name            = "red:status",                            // 3
 		.default_state   = LEDS_GPIO_DEFSTATE_OFF,
 		.panic_indicator = 1,
 		.default_trigger = "panic",
 	},
-	{ .name = "blue:usb", .default_state = LEDS_GPIO_DEFSTATE_OFF },  // 6
-	{ .name = "green:usb", .default_state = LEDS_GPIO_DEFSTATE_OFF }, // 7
-	{ .name                  = "blue:lan",                              // 8
+	{ .name = "blue:usb", .default_state = LEDS_GPIO_DEFSTATE_OFF },  // 4
+	{ .name = "green:usb", .default_state = LEDS_GPIO_DEFSTATE_OFF }, // 5
+	{ .name                  = "blue:lan",                              // 6
 	  .default_state         = LEDS_GPIO_DEFSTATE_ON,
 	  .retain_state_shutdown = 1 },
-	DISK_ACT_LED("sata1"),                                            // 9
-	DISK_ERR_LED("sata1"),                                            // 10
-	DISK_ACT_LED("sata2"),                                            // 11
-	DISK_ERR_LED("sata2"),                                            // 12
-	DISK_ACT_LED("sata3"),                                            // 13
-	DISK_ERR_LED("sata3"),                                            // 14
-	DISK_ACT_LED("sata4"),                                            // 15
-	DISK_ERR_LED("sata4"),                                            // 16
-	DISK_ACT_LED("sata5"),                                            // 17
-	DISK_ERR_LED("sata5"),                                            // 18
-	DISK_ACT_LED("sata6"),                                            // 19
-	DISK_ERR_LED("sata6"),                                            // 20
-	NVME_ACT_LED("nvme1"),                                            // 21
-	NVME_ERR_LED("nvme1"),                                            // 22
-	{ .name = "red:side_inner", .default_state = LEDS_GPIO_DEFSTATE_ON }, // 23
-	{ .name = "red:side_mid",   .default_state = LEDS_GPIO_DEFSTATE_ON }, // 24
-	{ .name = "red:side_outer", .default_state = LEDS_GPIO_DEFSTATE_ON }, // 25
+	DISK_ACT_LED("sata1"),                                            // 7
+	DISK_ERR_LED("sata1"),                                            // 8
+	DISK_ACT_LED("sata2"),                                            // 9
+	DISK_ERR_LED("sata2"),                                            // 10
+	DISK_ACT_LED("sata3"),                                            // 11
+	DISK_ERR_LED("sata3"),                                            // 12
+	DISK_ACT_LED("sata4"),                                            // 13
+	DISK_ERR_LED("sata4"),                                            // 14
+	DISK_ACT_LED("sata5"),                                            // 15
+	DISK_ERR_LED("sata5"),                                            // 16
+	DISK_ACT_LED("sata6"),                                            // 17
+	DISK_ERR_LED("sata6"),                                            // 18
+	NVME_ACT_LED("nvme1"),                                            // 19
+	NVME_ERR_LED("nvme1"),                                            // 20
+	{ .name = "red:side_inner", .default_state = LEDS_GPIO_DEFSTATE_ON }, // 21
+	{ .name = "red:side_mid",   .default_state = LEDS_GPIO_DEFSTATE_ON }, // 22
+	{ .name = "red:side_outer", .default_state = LEDS_GPIO_DEFSTATE_ON }, // 23
 };
 
 // not const: .gpio_blink_set is set in asustor_init()
@@ -122,24 +117,22 @@ static struct gpio_led_platform_data asustor_leds_pdata = {
 static struct gpiod_lookup_table asustor_fs6700_gpio_leds_lookup = {
 	.dev_id = "leds-gpio",
 	.table = {
-		// 0 - no front panel on this device
-		// 1 - no LCD either
 										// blue:power also controls the red LED
 										// inside the power button on the side
-		GPIO_LOOKUP_IDX(GPIO_IT87, 56, NULL,  2, GPIO_ACTIVE_LOW),	// blue:power
-		GPIO_LOOKUP_IDX(GPIO_IT87,  8, NULL,  3, GPIO_ACTIVE_LOW),	// red:power
-		GPIO_LOOKUP_IDX(GPIO_IT87, 31, NULL,  4, GPIO_ACTIVE_LOW),	// green:status
-		GPIO_LOOKUP_IDX(GPIO_IT87, 49, NULL,  5, GPIO_ACTIVE_LOW),	// red:status
-		// 6
-		// 7
-		GPIO_LOOKUP_IDX(GPIO_IT87, 55, NULL,  8, GPIO_ACTIVE_HIGH),	// blue:lan
-		// LEDs 9 - 20 don't exist in this system
-		GPIO_LOOKUP_IDX(GPIO_IT87, 12, NULL, 21, GPIO_ACTIVE_LOW),	// nvme1:green:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 13, NULL, 22, GPIO_ACTIVE_LOW),	// nvme1:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 56, NULL,  0, GPIO_ACTIVE_LOW),	// blue:power
+		GPIO_LOOKUP_IDX(GPIO_IT87,  8, NULL,  1, GPIO_ACTIVE_LOW),	// red:power
+		GPIO_LOOKUP_IDX(GPIO_IT87, 31, NULL,  2, GPIO_ACTIVE_LOW),	// green:status
+		GPIO_LOOKUP_IDX(GPIO_IT87, 49, NULL,  3, GPIO_ACTIVE_LOW),	// red:status
+		// 4
+		// 5
+		GPIO_LOOKUP_IDX(GPIO_IT87, 55, NULL,  6, GPIO_ACTIVE_HIGH),	// blue:lan
+		// LEDs 7 - 18 don't exist in this system
+		GPIO_LOOKUP_IDX(GPIO_IT87, 12, NULL, 19, GPIO_ACTIVE_LOW),	// nvme1:green:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 13, NULL, 20, GPIO_ACTIVE_LOW),	// nvme1:red:disk
 		// red LED strip next to the power button on the side
-		GPIO_LOOKUP_IDX(GPIO_IT87, 46, NULL, 23, GPIO_ACTIVE_LOW),	// red:side_inner
-		GPIO_LOOKUP_IDX(GPIO_IT87, 47, NULL, 24, GPIO_ACTIVE_LOW),	// red:side_mid
-		GPIO_LOOKUP_IDX(GPIO_IT87, 52, NULL, 25, GPIO_ACTIVE_LOW),	// red:side_outer
+		GPIO_LOOKUP_IDX(GPIO_IT87, 46, NULL, 21, GPIO_ACTIVE_LOW),	// red:side_inner
+		GPIO_LOOKUP_IDX(GPIO_IT87, 47, NULL, 22, GPIO_ACTIVE_LOW),	// red:side_mid
+		GPIO_LOOKUP_IDX(GPIO_IT87, 52, NULL, 23, GPIO_ACTIVE_LOW),	// red:side_outer
 		{}
 	},
 };
@@ -147,19 +140,17 @@ static struct gpiod_lookup_table asustor_fs6700_gpio_leds_lookup = {
 static struct gpiod_lookup_table asustor_as6702_gpio_leds_lookup = {
 	.dev_id = "leds-gpio",
 	.table = {
-		// 0: AS6702T and AS5402T don't have a front panel to illuminate
-		// 1: they don't have a LCD either
-		GPIO_LOOKUP_IDX(GPIO_IT87, 56, NULL,  2, GPIO_ACTIVE_LOW),	// blue:power
-		GPIO_LOOKUP_IDX(GPIO_IT87,  8, NULL,  3, GPIO_ACTIVE_LOW),	// red:power
-		GPIO_LOOKUP_IDX(GPIO_IT87, 31, NULL,  4, GPIO_ACTIVE_LOW),	// green:status
-		GPIO_LOOKUP_IDX(GPIO_IT87, 49, NULL,  5, GPIO_ACTIVE_LOW),	// red:status
-		// 6
-		GPIO_LOOKUP_IDX(GPIO_IT87, 21, NULL,  7, GPIO_ACTIVE_LOW),	// green:usb
-		GPIO_LOOKUP_IDX(GPIO_IT87, 55, NULL,  8, GPIO_ACTIVE_HIGH),	// blue:lan
-		GPIO_LOOKUP_IDX(GPIO_IT87, 12, NULL,  9, GPIO_ACTIVE_HIGH),	// sata1:green:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 13, NULL, 10, GPIO_ACTIVE_LOW),	// sata1:red:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 46, NULL, 11, GPIO_ACTIVE_HIGH),	// sata2:green:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 47, NULL, 12, GPIO_ACTIVE_LOW),	// sata2:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 56, NULL,  0, GPIO_ACTIVE_LOW),	// blue:power
+		GPIO_LOOKUP_IDX(GPIO_IT87,  8, NULL,  1, GPIO_ACTIVE_LOW),	// red:power
+		GPIO_LOOKUP_IDX(GPIO_IT87, 31, NULL,  2, GPIO_ACTIVE_LOW),	// green:status
+		GPIO_LOOKUP_IDX(GPIO_IT87, 49, NULL,  3, GPIO_ACTIVE_LOW),	// red:status
+		// 4
+		GPIO_LOOKUP_IDX(GPIO_IT87, 21, NULL,  5, GPIO_ACTIVE_LOW),	// green:usb
+		GPIO_LOOKUP_IDX(GPIO_IT87, 55, NULL,  6, GPIO_ACTIVE_HIGH),	// blue:lan
+		GPIO_LOOKUP_IDX(GPIO_IT87, 12, NULL,  7, GPIO_ACTIVE_HIGH),	// sata1:green:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 13, NULL,  8, GPIO_ACTIVE_LOW),	// sata1:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 46, NULL,  9, GPIO_ACTIVE_HIGH),	// sata2:green:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 47, NULL, 10, GPIO_ACTIVE_LOW),	// sata2:red:disk
 		{}
 	},
 };
@@ -167,23 +158,21 @@ static struct gpiod_lookup_table asustor_as6702_gpio_leds_lookup = {
 static struct gpiod_lookup_table asustor_as6704_gpio_leds_lookup = {
 	.dev_id = "leds-gpio",
 	.table = {
-		GPIO_LOOKUP_IDX(GPIO_IT87, 29, NULL,  0, GPIO_ACTIVE_HIGH),	// power:front_panel
-		GPIO_LOOKUP_IDX(GPIO_IT87, 59, NULL,  1, GPIO_ACTIVE_HIGH),	// power:lcd
-		GPIO_LOOKUP_IDX(GPIO_IT87, 56, NULL,  2, GPIO_ACTIVE_LOW),	// blue:power
-		GPIO_LOOKUP_IDX(GPIO_IT87,  8, NULL,  3, GPIO_ACTIVE_LOW),	// red:power
-		GPIO_LOOKUP_IDX(GPIO_IT87, 31, NULL,  4, GPIO_ACTIVE_LOW),	// green:status
-		GPIO_LOOKUP_IDX(GPIO_IT87, 49, NULL,  5, GPIO_ACTIVE_LOW),	// red:status
-		// 6
-		GPIO_LOOKUP_IDX(GPIO_IT87, 21, NULL,  7, GPIO_ACTIVE_LOW),	// green:usb
-		GPIO_LOOKUP_IDX(GPIO_IT87, 55, NULL,  8, GPIO_ACTIVE_HIGH),	// blue:lan
-		GPIO_LOOKUP_IDX(GPIO_IT87, 12, NULL,  9, GPIO_ACTIVE_HIGH),	// sata1:green:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 13, NULL, 10, GPIO_ACTIVE_LOW),	// sata1:red:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 46, NULL, 11, GPIO_ACTIVE_HIGH),	// sata2:green:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 47, NULL, 12, GPIO_ACTIVE_LOW),	// sata2:red:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 51, NULL, 13, GPIO_ACTIVE_HIGH),	// sata3:green:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 52, NULL, 14, GPIO_ACTIVE_LOW),	// sata3:red:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 63, NULL, 15, GPIO_ACTIVE_HIGH),	// sata4:green:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 48, NULL, 16, GPIO_ACTIVE_LOW),	// sata4:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 56, NULL,  0, GPIO_ACTIVE_LOW),	// blue:power
+		GPIO_LOOKUP_IDX(GPIO_IT87,  8, NULL,  1, GPIO_ACTIVE_LOW),	// red:power
+		GPIO_LOOKUP_IDX(GPIO_IT87, 31, NULL,  2, GPIO_ACTIVE_LOW),	// green:status
+		GPIO_LOOKUP_IDX(GPIO_IT87, 49, NULL,  3, GPIO_ACTIVE_LOW),	// red:status
+		// 4
+		GPIO_LOOKUP_IDX(GPIO_IT87, 21, NULL,  5, GPIO_ACTIVE_LOW),	// green:usb
+		GPIO_LOOKUP_IDX(GPIO_IT87, 55, NULL,  6, GPIO_ACTIVE_HIGH),	// blue:lan
+		GPIO_LOOKUP_IDX(GPIO_IT87, 12, NULL,  7, GPIO_ACTIVE_HIGH),	// sata1:green:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 13, NULL,  8, GPIO_ACTIVE_LOW),	// sata1:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 46, NULL,  9, GPIO_ACTIVE_HIGH),	// sata2:green:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 47, NULL, 10, GPIO_ACTIVE_LOW),	// sata2:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 51, NULL, 11, GPIO_ACTIVE_HIGH),	// sata3:green:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 52, NULL, 12, GPIO_ACTIVE_LOW),	// sata3:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 63, NULL, 13, GPIO_ACTIVE_HIGH),	// sata4:green:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 48, NULL, 14, GPIO_ACTIVE_LOW),	// sata4:red:disk
 		// Do NOT add GP72 (line 50) to this or any other table: on AS6704T it is the
 		// (active-low) power of the HDD backplane, for all bays. leds-gpio would claim
 		// it as an output and could switch the disks off.
@@ -194,27 +183,25 @@ static struct gpiod_lookup_table asustor_as6704_gpio_leds_lookup = {
 static struct gpiod_lookup_table asustor_as6706_gpio_leds_lookup = {
 	.dev_id = "leds-gpio",
 	.table = {
-		GPIO_LOOKUP_IDX(GPIO_IT87, 29, NULL,  0, GPIO_ACTIVE_HIGH),	// power:front_panel
-		GPIO_LOOKUP_IDX(GPIO_IT87, 59, NULL,  1, GPIO_ACTIVE_HIGH),	// power:lcd
-		GPIO_LOOKUP_IDX(GPIO_IT87, 56, NULL,  2, GPIO_ACTIVE_LOW),	// blue:power
-		GPIO_LOOKUP_IDX(GPIO_IT87,  8, NULL,  3, GPIO_ACTIVE_LOW),	// red:power
-		GPIO_LOOKUP_IDX(GPIO_IT87, 31, NULL,  4, GPIO_ACTIVE_LOW),	// green:status
-		GPIO_LOOKUP_IDX(GPIO_IT87, 49, NULL,  5, GPIO_ACTIVE_LOW),	// red:status
-		// 6
-		GPIO_LOOKUP_IDX(GPIO_IT87, 21, NULL,  7, GPIO_ACTIVE_LOW),	// green:usb
-		GPIO_LOOKUP_IDX(GPIO_IT87, 55, NULL,  8, GPIO_ACTIVE_HIGH),	// blue:lan
-		GPIO_LOOKUP_IDX(GPIO_IT87, 12, NULL,  9, GPIO_ACTIVE_HIGH),	// sata1:green:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 13, NULL, 10, GPIO_ACTIVE_LOW),	// sata1:red:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 46, NULL, 11, GPIO_ACTIVE_HIGH),	// sata2:green:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 47, NULL, 12, GPIO_ACTIVE_LOW),	// sata2:red:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 51, NULL, 13, GPIO_ACTIVE_HIGH),	// sata3:green:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 52, NULL, 14, GPIO_ACTIVE_LOW),	// sata3:red:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 63, NULL, 15, GPIO_ACTIVE_HIGH),	// sata4:green:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 48, NULL, 16, GPIO_ACTIVE_LOW),	// sata4:red:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 61, NULL, 17, GPIO_ACTIVE_HIGH),	// sata5:green:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 62, NULL, 18, GPIO_ACTIVE_LOW),	// sata5:red:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 58, NULL, 19, GPIO_ACTIVE_HIGH),	// sata6:green:disk
-		GPIO_LOOKUP_IDX(GPIO_IT87, 60, NULL, 20, GPIO_ACTIVE_LOW),	// sata6:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 56, NULL,  0, GPIO_ACTIVE_LOW),	// blue:power
+		GPIO_LOOKUP_IDX(GPIO_IT87,  8, NULL,  1, GPIO_ACTIVE_LOW),	// red:power
+		GPIO_LOOKUP_IDX(GPIO_IT87, 31, NULL,  2, GPIO_ACTIVE_LOW),	// green:status
+		GPIO_LOOKUP_IDX(GPIO_IT87, 49, NULL,  3, GPIO_ACTIVE_LOW),	// red:status
+		// 4
+		GPIO_LOOKUP_IDX(GPIO_IT87, 21, NULL,  5, GPIO_ACTIVE_LOW),	// green:usb
+		GPIO_LOOKUP_IDX(GPIO_IT87, 55, NULL,  6, GPIO_ACTIVE_HIGH),	// blue:lan
+		GPIO_LOOKUP_IDX(GPIO_IT87, 12, NULL,  7, GPIO_ACTIVE_HIGH),	// sata1:green:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 13, NULL,  8, GPIO_ACTIVE_LOW),	// sata1:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 46, NULL,  9, GPIO_ACTIVE_HIGH),	// sata2:green:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 47, NULL, 10, GPIO_ACTIVE_LOW),	// sata2:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 51, NULL, 11, GPIO_ACTIVE_HIGH),	// sata3:green:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 52, NULL, 12, GPIO_ACTIVE_LOW),	// sata3:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 63, NULL, 13, GPIO_ACTIVE_HIGH),	// sata4:green:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 48, NULL, 14, GPIO_ACTIVE_LOW),	// sata4:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 61, NULL, 15, GPIO_ACTIVE_HIGH),	// sata5:green:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 62, NULL, 16, GPIO_ACTIVE_LOW),	// sata5:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 58, NULL, 17, GPIO_ACTIVE_HIGH),	// sata6:green:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87, 60, NULL, 18, GPIO_ACTIVE_LOW),	// sata6:red:disk
 		{}
 	},
 };
@@ -222,23 +209,21 @@ static struct gpiod_lookup_table asustor_as6706_gpio_leds_lookup = {
 static struct gpiod_lookup_table asustor_6100_gpio_leds_lookup = {
 	.dev_id = "leds-gpio",
 	.table = {
-		GPIO_LOOKUP_IDX(GPIO_IT87,   29, NULL,  0, GPIO_ACTIVE_HIGH), // power:front_panel
-		GPIO_LOOKUP_IDX(GPIO_IT87,   59, NULL,  1, GPIO_ACTIVE_HIGH), // power:lcd
-		GPIO_LOOKUP_IDX(GPIO_IT87,   56, NULL,  2, GPIO_ACTIVE_LOW),  // blue:power
-		GPIO_LOOKUP_IDX(GPIO_IT87,    8, NULL,  3, GPIO_ACTIVE_LOW),  // red:power
-		GPIO_LOOKUP_IDX(GPIO_IT87,   31, NULL,  4, GPIO_ACTIVE_LOW),  // green:status
-		GPIO_LOOKUP_IDX(GPIO_AS6100, 21, NULL,  5, GPIO_ACTIVE_HIGH), // red:status
-		// 6
-		GPIO_LOOKUP_IDX(GPIO_IT87,   21, NULL,  7, GPIO_ACTIVE_LOW),  // green:usb
-		GPIO_LOOKUP_IDX(GPIO_IT87,   52, NULL,  8, GPIO_ACTIVE_HIGH), // blue:lan
-		GPIO_LOOKUP_IDX(GPIO_AS6100, 24, NULL,  9, GPIO_ACTIVE_LOW),  // sata1:green:disk
-		GPIO_LOOKUP_IDX(GPIO_AS6100, 15, NULL, 10, GPIO_ACTIVE_HIGH), // sata1:red:disk
-		GPIO_LOOKUP_IDX(GPIO_AS6100, 22, NULL, 11, GPIO_ACTIVE_LOW),  // sata2:green:disk
-		GPIO_LOOKUP_IDX(GPIO_AS6100, 19, NULL, 12, GPIO_ACTIVE_HIGH), // sata2:red:disk
-		GPIO_LOOKUP_IDX(GPIO_AS6100, 25, NULL, 13, GPIO_ACTIVE_LOW),  // sata3:green:disk
-		GPIO_LOOKUP_IDX(GPIO_AS6100, 16, NULL, 14, GPIO_ACTIVE_HIGH), // sata3:red:disk
-		GPIO_LOOKUP_IDX(GPIO_AS6100, 18, NULL, 15, GPIO_ACTIVE_LOW),  // sata4:green:disk
-		GPIO_LOOKUP_IDX(GPIO_AS6100, 17, NULL, 16, GPIO_ACTIVE_HIGH), // sata4:red:disk
+		GPIO_LOOKUP_IDX(GPIO_IT87,   56, NULL,  0, GPIO_ACTIVE_LOW),  // blue:power
+		GPIO_LOOKUP_IDX(GPIO_IT87,    8, NULL,  1, GPIO_ACTIVE_LOW),  // red:power
+		GPIO_LOOKUP_IDX(GPIO_IT87,   31, NULL,  2, GPIO_ACTIVE_LOW),  // green:status
+		GPIO_LOOKUP_IDX(GPIO_AS6100, 21, NULL,  3, GPIO_ACTIVE_HIGH), // red:status
+		// 4
+		GPIO_LOOKUP_IDX(GPIO_IT87,   21, NULL,  5, GPIO_ACTIVE_LOW),  // green:usb
+		GPIO_LOOKUP_IDX(GPIO_IT87,   52, NULL,  6, GPIO_ACTIVE_HIGH), // blue:lan
+		GPIO_LOOKUP_IDX(GPIO_AS6100, 24, NULL,  7, GPIO_ACTIVE_LOW),  // sata1:green:disk
+		GPIO_LOOKUP_IDX(GPIO_AS6100, 15, NULL,  8, GPIO_ACTIVE_HIGH), // sata1:red:disk
+		GPIO_LOOKUP_IDX(GPIO_AS6100, 22, NULL,  9, GPIO_ACTIVE_LOW),  // sata2:green:disk
+		GPIO_LOOKUP_IDX(GPIO_AS6100, 19, NULL, 10, GPIO_ACTIVE_HIGH), // sata2:red:disk
+		GPIO_LOOKUP_IDX(GPIO_AS6100, 25, NULL, 11, GPIO_ACTIVE_LOW),  // sata3:green:disk
+		GPIO_LOOKUP_IDX(GPIO_AS6100, 16, NULL, 12, GPIO_ACTIVE_HIGH), // sata3:red:disk
+		GPIO_LOOKUP_IDX(GPIO_AS6100, 18, NULL, 13, GPIO_ACTIVE_LOW),  // sata4:green:disk
+		GPIO_LOOKUP_IDX(GPIO_AS6100, 17, NULL, 14, GPIO_ACTIVE_HIGH), // sata4:red:disk
 		{}
 	},
 };
@@ -246,26 +231,59 @@ static struct gpiod_lookup_table asustor_6100_gpio_leds_lookup = {
 static struct gpiod_lookup_table asustor_600_gpio_leds_lookup = {
 	.dev_id = "leds-gpio",
 	.table = {
-		GPIO_LOOKUP_IDX(GPIO_IT87, 29, NULL, 0, GPIO_ACTIVE_HIGH), // power:front_panel
-		GPIO_LOOKUP_IDX(GPIO_IT87, 59, NULL, 1, GPIO_ACTIVE_HIGH), // power:lcd
-		GPIO_LOOKUP_IDX(GPIO_IT87, 56, NULL, 2, GPIO_ACTIVE_LOW),  // blue:power
-		GPIO_LOOKUP_IDX(GPIO_IT87,  8, NULL, 3, GPIO_ACTIVE_LOW),  // red:power
-		GPIO_LOOKUP_IDX(GPIO_IT87, 31, NULL, 4, GPIO_ACTIVE_LOW),  // green:status
-		GPIO_LOOKUP_IDX(GPIO_ICH,  27, NULL, 5, GPIO_ACTIVE_HIGH), // red:status
-		GPIO_LOOKUP_IDX(GPIO_IT87, 21, NULL, 6, GPIO_ACTIVE_LOW),  // blue:usb
-		// 7
-		GPIO_LOOKUP_IDX(GPIO_IT87, 52, NULL, 8, GPIO_ACTIVE_HIGH), // blue:lan
+		GPIO_LOOKUP_IDX(GPIO_IT87, 56, NULL, 0, GPIO_ACTIVE_LOW),  // blue:power
+		GPIO_LOOKUP_IDX(GPIO_IT87,  8, NULL, 1, GPIO_ACTIVE_LOW),  // red:power
+		GPIO_LOOKUP_IDX(GPIO_IT87, 31, NULL, 2, GPIO_ACTIVE_LOW),  // green:status
+		GPIO_LOOKUP_IDX(GPIO_ICH,  27, NULL, 3, GPIO_ACTIVE_HIGH), // red:status
+		GPIO_LOOKUP_IDX(GPIO_IT87, 21, NULL, 4, GPIO_ACTIVE_LOW),  // blue:usb
+		// 5
+		GPIO_LOOKUP_IDX(GPIO_IT87, 52, NULL, 6, GPIO_ACTIVE_HIGH), // blue:lan
 		{}
 	},
 };
 
-// The buzzer gate, see "The buzzer" below. ASUSTOR's firmware drives GP75 for
-// the buzzer on all its Jasper Lake devices (AS6702T/AS6704T/AS6706T, AS54xxT,
-// FS6706T/FS6712X) and on AS66xx; not tested on hardware yet.
-static struct gpiod_lookup_table asustor_gp75_buzzer_lookup = {
+// The GPIOs of the asustor platform device (gpiolib only uses the first lookup
+// table that matches a device, so there is one table per combination):
+// - "buzzer": the buzzer gate, see "The buzzer" below. ASUSTOR's firmware drives
+//   GP75 for the buzzer on all its Jasper Lake devices (AS6702T/AS6704T/AS6706T,
+//   AS54xxT, FS6706T/FS6712X) and on AS66xx; not tested on hardware yet.
+// - "lcd-power", "front-panel-power": power rails, see "Power rails" below.
+
+// AS6702T/AS5402T and FS6706T/FS6712X: no LCD
+static struct gpiod_lookup_table asustor_jsl_gpios_lookup = {
 	.dev_id = "asustor",
 	.table = {
-		GPIO_LOOKUP(GPIO_IT87, 53, "buzzer", GPIO_ACTIVE_HIGH),	// GP75
+		GPIO_LOOKUP(GPIO_IT87, 53, "buzzer", GPIO_ACTIVE_HIGH),		// GP75
+		{}
+	},
+};
+
+// AS6704T/AS5404T and AS6706T: GP45 (line 29) is NOT mapped, see "Power rails"
+static struct gpiod_lookup_table asustor_jsl_lcd_gpios_lookup = {
+	.dev_id = "asustor",
+	.table = {
+		GPIO_LOOKUP(GPIO_IT87, 53, "buzzer", GPIO_ACTIVE_HIGH),		// GP75
+		GPIO_LOOKUP(GPIO_IT87, 59, "lcd-power", GPIO_ACTIVE_HIGH),	// GP83
+		{}
+	},
+};
+
+static struct gpiod_lookup_table asustor_6600_gpios_lookup = {
+	.dev_id = "asustor",
+	.table = {
+		GPIO_LOOKUP(GPIO_IT87, 53, "buzzer", GPIO_ACTIVE_HIGH),		// GP75
+		GPIO_LOOKUP(GPIO_IT87, 59, "lcd-power", GPIO_ACTIVE_HIGH),	// GP83
+		GPIO_LOOKUP(GPIO_IT87, 29, "front-panel-power", GPIO_ACTIVE_HIGH), // GP45
+		{}
+	},
+};
+
+// AS61xx and AS6xx
+static struct gpiod_lookup_table asustor_600_gpios_lookup = {
+	.dev_id = "asustor",
+	.table = {
+		GPIO_LOOKUP(GPIO_IT87, 59, "lcd-power", GPIO_ACTIVE_HIGH),	// GP83
+		GPIO_LOOKUP(GPIO_IT87, 29, "front-panel-power", GPIO_ACTIVE_HIGH), // GP45
 		{}
 	},
 };
@@ -397,9 +415,9 @@ struct asustor_driver_data {
 	// use the "disk-activity" trigger
 	const struct asustor_disk_bays *disk_bays;
 
-	// the buzzer gate GPIO ("buzzer" of the asustor platform device),
-	// NULL if not known for this device
-	struct gpiod_lookup_table *buzzer;
+	// the GPIOs of the asustor platform device (buzzer gate, power rails),
+	// NULL if none are known for this device
+	struct gpiod_lookup_table *gpios;
 };
 
 #define VALID_OVERRIDE_NAMES                                                   \
@@ -433,9 +451,9 @@ static struct asustor_driver_data asustor_as6702_driver_data = {
 		// Both AS6702T and AS5402T use this SATA controller (the other devices don't)
 		{ 0x8086, 0x4dd3, 1, 1 }
 	},
-	.leds   = &asustor_as6702_gpio_leds_lookup,
-	.keys   = &asustor_6100_gpio_keys_lookup,
-	.buzzer = &asustor_gp75_buzzer_lookup,
+	.leds  = &asustor_as6702_gpio_leds_lookup,
+	.keys  = &asustor_6100_gpio_keys_lookup,
+	.gpios = &asustor_jsl_gpios_lookup,
 };
 
 static const struct asustor_usb_led asustor_as6704_usb_led = {
@@ -468,7 +486,7 @@ static struct asustor_driver_data asustor_as6704_driver_data = {
 	.keys      = &asustor_6100_gpio_keys_lookup,
 	.usb_led   = &asustor_as6704_usb_led,
 	.disk_bays = &asustor_as6704_disk_bays,
-	.buzzer    = &asustor_gp75_buzzer_lookup,
+	.gpios     = &asustor_jsl_lcd_gpios_lookup,
 };
 
 static struct asustor_driver_data asustor_as6706_driver_data = {
@@ -481,9 +499,9 @@ static struct asustor_driver_data asustor_as6706_driver_data = {
 		//  which thankfully is NOT the same one that FS6712 uses. Also it allows replacing the
 		//  m.2 NVME slots with a 10Gbit NIC, could be that then the packet switch goes away, IDK)
 	},
-	.leds   = &asustor_as6706_gpio_leds_lookup,
-	.keys   = &asustor_6100_gpio_keys_lookup,
-	.buzzer = &asustor_gp75_buzzer_lookup,
+	.leds  = &asustor_as6706_gpio_leds_lookup,
+	.keys  = &asustor_6100_gpio_keys_lookup,
+	.gpios = &asustor_jsl_lcd_gpios_lookup,
 };
 
 static struct asustor_driver_data asustor_fs6712_driver_data = {
@@ -495,9 +513,9 @@ static struct asustor_driver_data asustor_fs6712_driver_data = {
 		// one of these exist; upper limit doesn't matter, so just use DEVICE_COUNT_MAX
 		{ 0x1b21, 0x2806, 1, DEVICE_COUNT_MAX },
 	},
-	.leds   = &asustor_fs6700_gpio_leds_lookup,
-	.keys   = &asustor_fs6700_gpio_keys_lookup,
-	.buzzer = &asustor_gp75_buzzer_lookup,
+	.leds  = &asustor_fs6700_gpio_leds_lookup,
+	.keys  = &asustor_fs6700_gpio_keys_lookup,
+	.gpios = &asustor_jsl_gpios_lookup,
 };
 
 static struct asustor_driver_data asustor_fs6706_driver_data = {
@@ -510,9 +528,9 @@ static struct asustor_driver_data asustor_fs6706_driver_data = {
 		{ 0x1b21, 0x1164, 0, 0 }, // .. neither the ASMedia one used by AS6704T
 		{ 0x1b21, 0x1166, 0, 0 }, // .. nor the ASMedia one used by AS6706T
 	},
-	.leds   = &asustor_fs6700_gpio_leds_lookup,
-	.keys   = &asustor_fs6700_gpio_keys_lookup,
-	.buzzer = &asustor_gp75_buzzer_lookup,
+	.leds  = &asustor_fs6700_gpio_leds_lookup,
+	.keys  = &asustor_fs6700_gpio_keys_lookup,
+	.gpios = &asustor_jsl_gpios_lookup,
 };
 
 /*
@@ -530,22 +548,25 @@ static struct asustor_driver_data asustor_6600_driver_data = {
 	// so they're not set here (and thus initialized to all-zero)
 
 	// the LED GPIOs are the same as in AS67xx, so use the one from AS6704 which should work for
-	// both AS6602T and AS6604T (an AS66xx with more than 4 drives doesn't seem to exist)
-	.leds   = &asustor_as6704_gpio_leds_lookup,
-	.keys   = &asustor_6100_gpio_keys_lookup,
-	.buzzer = &asustor_gp75_buzzer_lookup,
+	// both AS6602T and AS6604T (an AS66xx with more than 4 drives doesn't seem to exist).
+	// Unlike on AS67xx, it also holds the front panel power rail (GP45).
+	.leds  = &asustor_as6704_gpio_leds_lookup,
+	.keys  = &asustor_6100_gpio_keys_lookup,
+	.gpios = &asustor_6600_gpios_lookup,
 };
 
 static struct asustor_driver_data asustor_6100_driver_data = {
-	.name = "AS61xx",
-	.leds = &asustor_6100_gpio_leds_lookup,
-	.keys = &asustor_6100_gpio_keys_lookup,
+	.name  = "AS61xx",
+	.leds  = &asustor_6100_gpio_leds_lookup,
+	.keys  = &asustor_6100_gpio_keys_lookup,
+	.gpios = &asustor_600_gpios_lookup,
 };
 
 static struct asustor_driver_data asustor_600_driver_data = {
-	.name = "AS6xx",
-	.leds = &asustor_600_gpio_leds_lookup,
-	.keys = &asustor_600_gpio_keys_lookup,
+	.name  = "AS6xx",
+	.leds  = &asustor_600_gpio_leds_lookup,
+	.keys  = &asustor_600_gpio_keys_lookup,
+	.gpios = &asustor_600_gpios_lookup,
 };
 
 // NOTE: Don't use this table with dmi_first_match(), because it has several entries that
@@ -1252,7 +1273,6 @@ static void __init asustor_buzzer_init(struct device *dev)
 	}
 	asustor_buzzer_status = "unavailable";
 
-	gpiod_add_lookup_table(driver_data->buzzer);
 	gpio = gpiod_get(dev, "buzzer", GPIOD_OUT_LOW);
 	if (IS_ERR(gpio)) {
 		ret  = PTR_ERR(gpio);
@@ -1266,7 +1286,7 @@ static void __init asustor_buzzer_init(struct device *dev)
 		else
 			pr_warn("no buzzer: getting the buzzer gate GPIO failed: %d\n",
 			        ret);
-		goto err_lookup;
+		return;
 	}
 	asustor_buzzer_gpio = gpio;
 	INIT_WORK(&asustor_buzzer_work, asustor_buzzer_work_fn);
@@ -1302,8 +1322,6 @@ err_input:
 	pr_warn("no buzzer: registering the input device failed: %d\n", ret);
 	gpiod_put(asustor_buzzer_gpio);
 	asustor_buzzer_gpio = NULL;
-err_lookup:
-	gpiod_remove_lookup_table(driver_data->buzzer);
 }
 
 static void asustor_buzzer_exit(void)
@@ -1321,15 +1339,135 @@ static void asustor_buzzer_exit(void)
 	gpiod_set_value_cansleep(asustor_buzzer_gpio, 0);
 	gpiod_put(asustor_buzzer_gpio);
 	asustor_buzzer_gpio = NULL;
-	gpiod_remove_lookup_table(driver_data->buzzer);
 }
 
-// The asustor platform device: /sys/devices/platform/asustor/ has the power
-// settings (asustor_power.c) and buzzer_gate, and it's the consumer of the
-// buzzer gate GPIO and the parent of the buzzer's input device. Only created
-// if the device has either.
+// Power rails.
+// Two IT87 GPIOs switch power rather than LEDs (older versions of this driver
+// had them as the LEDs power:lcd and power:front_panel):
+// - "lcd-power" (GP83) powers the LCD module, including the MCU that drives the
+//   display and reads the front panel buttons (ASUSTOR's firmware switches it
+//   in Hal_Lcm_Set_Power() to restart the LCD). It's claimed high (on) and
+//   shown as /sys/devices/platform/asustor/lcd_power. Writing 0 there cuts the
+//   MCU's power: the display goes dark, the front buttons stop working, and
+//   the MCU boots again when power returns. To only switch off the display,
+//   use the LCD's serial protocol instead. The driver never switches it off
+//   by itself: gpiod_put() leaves the line as it is, so it stays on when
+//   asustor is unloaded and at shutdown.
+//   Claiming it with GPIOD_OUT_HIGH doesn't glitch when the firmware left it
+//   on: asustor_gpio_it87's request() doesn't change the direction (and GP83
+//   has no Simple I/O switch), and direction_output() sets the output enable
+//   bit (already set) before writing the (unchanged) value.
+// - "front-panel-power" (GP45): on AS66xx, AS61xx and AS6xx, it is claimed high
+//   and held, as before (research for AS604T calls it "front leds power"; not
+//   tested). On the Jasper Lake devices it is left alone: ASUSTOR's firmware
+//   never drives it as a GPIO there (its blink engine setup only switches it to
+//   its alternate function), and switching it has no visible effect on AS6704T.
+
+static struct gpio_desc *asustor_lcd_power_gpio;
+static struct gpio_desc *asustor_front_panel_power_gpio;
+
+// is con_id in the asustor platform device's GPIO lookup table?
+static bool asustor_has_gpio(const char *con_id)
+{
+	const struct gpiod_lookup *p;
+
+	if (!driver_data->gpios)
+		return false;
+	for (p = driver_data->gpios->table; p->key; p++) {
+		if (p->con_id && !strcmp(p->con_id, con_id))
+			return true;
+	}
+	return false;
+}
+
+static ssize_t lcd_power_show(struct device *dev, struct device_attribute *attr,
+                              char *buf)
+{
+	int val = gpiod_get_value_cansleep(asustor_lcd_power_gpio);
+
+	if (val < 0)
+		return val;
+	return sysfs_emit(buf, "%d\n", val);
+}
+
+static ssize_t lcd_power_store(struct device *dev,
+                               struct device_attribute *attr, const char *buf,
+                               size_t count)
+{
+	bool on;
+	int ret;
+
+	ret = kstrtobool(buf, &on);
+	if (ret)
+		return ret;
+	gpiod_set_value_cansleep(asustor_lcd_power_gpio, on);
+	return count;
+}
+static DEVICE_ATTR_RW(lcd_power);
+
+static struct attribute *asustor_rails_attrs[] = {
+	&dev_attr_lcd_power.attr,
+	NULL,
+};
+
+// lcd_power only exists if the LCD's power rail is claimed
+static umode_t asustor_rails_attr_visible(struct kobject *kobj,
+                                          struct attribute *attr, int n)
+{
+	if (attr == &dev_attr_lcd_power.attr && !asustor_lcd_power_gpio)
+		return 0;
+	return attr->mode;
+}
+
+static const struct attribute_group asustor_rails_group = {
+	.attrs      = asustor_rails_attrs,
+	.is_visible = asustor_rails_attr_visible,
+};
+
+// Claims the power rail con_id of dev (the asustor platform device) and
+// switches it on, if this device has it. Returns NULL otherwise.
+static struct gpio_desc *__init asustor_rail_get(struct device *dev,
+                                                 const char *con_id)
+{
+	struct gpio_desc *gpio;
+
+	if (!asustor_has_gpio(con_id))
+		return NULL;
+
+	gpio = gpiod_get(dev, con_id, GPIOD_OUT_HIGH);
+	if (IS_ERR(gpio)) {
+		pr_warn("power rail %s not available: %ld\n", con_id,
+		        PTR_ERR(gpio));
+		return NULL;
+	}
+	return gpio;
+}
+
+static void __init asustor_rails_init(struct device *dev)
+{
+	asustor_lcd_power_gpio = asustor_rail_get(dev, "lcd-power");
+	asustor_front_panel_power_gpio =
+		asustor_rail_get(dev, "front-panel-power");
+}
+
+// Releases the power rails, which keep their state (see "Power rails").
+static void asustor_rails_exit(void)
+{
+	if (asustor_lcd_power_gpio)
+		gpiod_put(asustor_lcd_power_gpio);
+	asustor_lcd_power_gpio = NULL;
+	if (asustor_front_panel_power_gpio)
+		gpiod_put(asustor_front_panel_power_gpio);
+	asustor_front_panel_power_gpio = NULL;
+}
+
+// The asustor platform device, registered on every supported device; userspace
+// can tell from /sys/devices/platform/asustor/ that the driver is loaded. It
+// has lcd_power, the power settings (asustor_power.c, IT8625E only) and
+// buzzer_gate (only with a buzzer gate), it's the consumer of the GPIOs in
+// driver_data->gpios and the parent of the buzzer's input device.
 static struct platform_device *asustor_pdev;
-static const struct attribute_group *asustor_pdev_groups[3];
+static const struct attribute_group *asustor_pdev_groups[4];
 
 static int __init asustor_pdev_init(void)
 {
@@ -1337,22 +1475,22 @@ static int __init asustor_pdev_init(void)
 	struct platform_device *pdev;
 	int ret, n = 0;
 
+	asustor_pdev_groups[n++] = &asustor_rails_group;
 	if (power)
 		asustor_pdev_groups[n++] = power;
-	if (driver_data->buzzer)
+	if (asustor_has_gpio("buzzer"))
 		asustor_pdev_groups[n++] = &asustor_buzzer_group;
-	if (n == 0)
-		return 0;
 
 	pdev = platform_device_alloc("asustor", PLATFORM_DEVID_NONE);
 	if (!pdev)
 		return -ENOMEM;
 	pdev->dev.groups = asustor_pdev_groups;
 
-	// The buzzer's input device is a child of this device, so it can only be
+	// The GPIO lookup matches this device by name, and the buzzer's input
+	// device is its child, so the GPIOs are claimed and the input device is
 	// registered once this device is added. Hold back the device's "add"
-	// uevent until then (like device_add_disk() does), so buzzer_gate has
-	// its final value when userspace learns about the device.
+	// uevent until then (like device_add_disk() does), so its attributes
+	// are final when userspace learns about the device.
 	dev_set_uevent_suppress(&pdev->dev, true);
 	ret = platform_device_add(pdev);
 	if (ret) {
@@ -1360,8 +1498,16 @@ static int __init asustor_pdev_init(void)
 		return ret;
 	}
 
-	if (driver_data->buzzer)
-		asustor_buzzer_init(&pdev->dev);
+	if (driver_data->gpios) {
+		gpiod_add_lookup_table(driver_data->gpios);
+		asustor_rails_init(&pdev->dev);
+		// show lcd_power now that its GPIO is claimed
+		ret = sysfs_update_group(&pdev->dev.kobj, &asustor_rails_group);
+		if (ret)
+			pr_warn("failed adding lcd_power: %d\n", ret);
+		if (asustor_has_gpio("buzzer"))
+			asustor_buzzer_init(&pdev->dev);
+	}
 
 	dev_set_uevent_suppress(&pdev->dev, false);
 	kobject_uevent(&pdev->dev.kobj, KOBJ_ADD);
@@ -1372,10 +1518,15 @@ static int __init asustor_pdev_init(void)
 
 static void asustor_pdev_exit(void)
 {
+	if (!asustor_pdev)
+		return;
+
 	asustor_buzzer_exit();
-	if (asustor_pdev)
-		platform_device_unregister(asustor_pdev);
+	platform_device_unregister(asustor_pdev);
 	asustor_pdev = NULL;
+	asustor_rails_exit();
+	if (driver_data->gpios)
+		gpiod_remove_lookup_table(driver_data->gpios);
 }
 
 static int __init asustor_init(void)
@@ -1499,7 +1650,7 @@ static int __init asustor_init(void)
 	// optional, so the LEDs and buttons still work if this fails
 	ret = asustor_pdev_init();
 	if (ret)
-		pr_warn("failed registering the asustor device (power settings, buzzer gate): %d\n",
+		pr_warn("failed registering the asustor device (power rails, power settings, buzzer): %d\n",
 		        ret);
 
 	return 0;

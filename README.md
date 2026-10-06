@@ -101,9 +101,8 @@ The following DMI system-manufacturer / system-product-name combinations are cur
 - Buttons
   - USB Copy Button
   - Power Button (AS6)
-- Power (`/sys/class/leds/power:*`)
-  - LCD
-  - Front panel
+- Power rails: LCD power (`/sys/devices/platform/asustor/lcd_power`), front panel power,
+  see [below](#power-rails)
 - Buzzer (AS66xx, AS67xx, AS54xx, FS67xx) as the "ASUSTOR Buzzer" input device, see [below](#buzzer)
 - Power settings (AC power loss, EuP), see [below](#power-settings-ac-power-loss-and-eup)
 
@@ -204,6 +203,41 @@ On other devices, all disk LEDs use `disk-activity`, which blinks them all for a
 Note that currently the disk-related triggers (like `disk-activity`) do **not** work with NVME drives.
 That's a general limitation of the Linux kernel that is independent of this project.
 If this feature is ever implemented in the kernel, it will automatically work with this driver.
+
+### Power rails
+
+Two IT87 GPIOs that older versions of this driver showed as the LEDs `power:lcd` and
+`power:front_panel` are power rails, not LEDs. They're no longer in `/sys/class/leds/`: the
+`asustor` module switches them on when it's loaded and holds them.
+
+- **LCD power** (AS6704T, AS6706T, AS66xx, AS61xx, AS6xx; also AS5404T, which shares the AS6704T's
+  tables):
+  `/sys/devices/platform/asustor/lcd_power` reads `1` (on) or `0` (off), and root can write
+  either, e.g. `echo 1 | sudo tee /sys/devices/platform/asustor/lcd_power`.
+  **Writing `0` cuts the power of the whole LCD module**, including its microcontroller: the
+  display goes dark, the front panel buttons (which that microcontroller reads) stop working, and
+  it boots again when the power comes back, so whatever was on the display is gone. To switch
+  off just the display, send the LCD its display-off command over the serial port instead
+  (that's what truenas-asustor-chassisd does). The driver never switches the LCD off by itself:
+  the rail keeps its state when the driver is unloaded and at shutdown.
+- **Front panel power** (AS66xx, AS61xx, AS6xx): switched on and held, nothing to set (not
+  tested). On AS67xx, AS54xx and FS67xx that GPIO (GP45) is left as the BIOS set it: ASUSTOR's
+  firmware doesn't drive it there, and switching it had no visible effect on an AS6704T.
+
+`blue:lan` stays an LED, although on some devices (like AS6704T) it powers the front LAN LEDs
+rather than lighting an LED itself, so it can switch them off (e.g. at night). It keeps its state
+when the driver is unloaded.
+
+### Detecting the driver
+
+`/sys/devices/platform/asustor/` exists whenever the `asustor` module is loaded on a supported
+device, so userspace can check for it to detect the driver (`/sys/class/leds/power:lcd`, which
+was used for that before, no longer exists). What's in it depends on the device:
+- `lcd_power`: devices with an LCD, see [Power rails](#power-rails),
+- `ac_power_resume` and `eup`: devices with an IT8625E, see [below](#power-settings-ac-power-loss-and-eup),
+- `buzzer_gate`: devices with a known buzzer gate, see [Buzzer](#buzzer).
+
+Older versions of the driver only created it on some devices.
 
 ### Buzzer
 
