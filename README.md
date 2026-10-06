@@ -37,13 +37,15 @@ back to tracking upstream `main`.
 **Note:** The following dependencies from the mainline linux kernel are required, if they're not included by your distribution you may need to compile them yourself (note that some modules are only required on specific ASUSTOR models):
 
 - `gpio-ich` (AS6)
-- `hwmon-vid` (for the contained `asustor-it87` module)
+- `hwmon-vid` (for the included `it87` module)
 
 ### Optional
 
 - `it87` (AS6, AS61, AS62, AS66XX, AS67XX, AS54XX, FS67XX)
-  - This project includes a patched version of `it87` called `asustor-it87` which skips fan pwm sanity checks
-    and supports more variants of IT86XX and the IT87XX chips than the kernels `it87` driver.
+  - This project includes [Frank Crawford's out-of-tree `it87` driver](https://github.com/frankcrawford/it87)
+    (see [below](#it87-fan-control-and-pwm-polarity)), which supports more variants of the IT86XX
+    and IT87XX chips (like the IT8625E) than the kernel's `it87` driver. It's built as `it87.ko`,
+    under the same name as the kernel's driver, which it replaces.
   - Also includes a patched version of `gpio-it87` called `asustor-gpio-it87`, which supports
     the IT8625E chip that is used in several newer ASUSTOR devices, including
     [hardware blinking](#hardware-led-blinking) of up to two LEDs.
@@ -51,7 +53,7 @@ back to tracking upstream `main`.
   - Temperature monitoring (`lm-sensors`)
   - Fan speed regulation via `pwm1`
     - See [`example/fancontrol`](./example/fancontrol) for an example `/etc/fancontrol` config for a AS62 system
-    - `pwm1` etc should be in `/sys/devices/platform/asustor_it87.*/hwmon/hwmon*/`
+    - `pwm1` etc should be in `/sys/devices/platform/it87.*/hwmon/hwmon*/`
   - Front panel LED brightness adjustment via `pwm3`
 
 ## Compatibility
@@ -326,13 +328,47 @@ setup ASUSTOR's firmware does for GP7x/GP8x pins are not changed.
 With debugfs, `sudo cat /sys/kernel/debug/asustor_gpio_it87/regs` shows the pin configuration
 registers (read-only).
 
-### `it87` and PWM polarity
+### `it87`: fan control and PWM polarity
 
-This project includes a patched version of the `it87` module that is part of mainline kernel (`asustor-it87`). It skips PWM sanity checks for the fan because ASUSTOR firmware correctly initializes fans in active low polarity and can be used straight with `fancontrol` or similar tools.
+The hardware monitoring driver (temperatures, fans, `pwm*`) is
+[Frank Crawford's out-of-tree `it87`](https://github.com/frankcrawford/it87), included as
+`it87.c` and `compat.h`. [`it87.UPSTREAM`](it87.UPSTREAM) records which upstream commits they're
+from (currently upstream `master` plus [PR #110](https://github.com/frankcrawford/it87/pull/110),
+which adds the `force_pwm` parameter). Changes made here are separate commits on top of the
+imported version; `tools/sync-it87.sh <it87 checkout> <ref>` imports a newer upstream version
+and keeps them. Older versions of this project had their own copy of `it87` instead, called
+`asustor-it87` (`asustor_it87.ko`).
 
-Note that `it87` conflicts with `asustor-it87`, you may wish to add `it87` to the module blocklist or explicitly load `asustor-it87` instead.
+The module is called `it87`, like the kernel's own driver, which it replaces, so only one of the
+two can be loaded at a time:
+- `make install` installs it to `/lib/modules/$(uname -r)/updates/`, and DKMS installs it in a
+  way that also overrides the kernel's driver, so `modprobe it87` (and the `asustor` module's
+  soft dependency on `it87`) loads this one.
+- When loading the modules from the build directory with `insmod` instead, make sure the kernel's
+  `it87` isn't loaded (`lsmod | grep it87`, unload it with `sudo rmmod it87`), otherwise
+  `insmod it87.ko` fails with "File exists". Don't let anything load the kernel's driver at boot
+  either (e.g. an `it87` line in `/etc/modules` from `sensors-detect`).
+- `cat /sys/module/it87/version` shows which one is loaded: this one has a version ending in
+  `+asustor`.
 
-~~You may want to use [`patches/001-ignore-pwm-polarity-it87.patch`](patches/001-ignore-pwm-polarity-it87.patch) for the `it87` kernel module if it complains about PWM polarity. In this case, it's possible to use `fix_pwm_polarity=1`, however, it may reverse the polarity which is unwanted (i.e. high is low, low is high). It works fine when left as configured by the firmware.~~
+The hwmon device is in `/sys/devices/platform/it87.*/hwmon/hwmon*/` (named after the chip, e.g.
+`it8625`).
+
+**PWM polarity:** ASUSTOR's firmware sets up the fan outputs with active low polarity, and on
+some models (e.g. AS6704T) with all fans "off" in the fan control register. `it87` takes that for
+broken BIOS settings and doesn't create the `pwm*` files, with this message in `dmesg`:
+```
+it87 it87.2608: Detected broken BIOS defaults, disabling PWM interface (see fix_pwm_polarity and force_pwm parameters)
+```
+In that case, load it with `force_pwm=1`, e.g. with `options it87 force_pwm=1` in
+`/etc/modprobe.d/it87.conf`. That keeps the active low polarity (as ASUSTOR's firmware does, it
+never changes it) and enables the `pwm*` files, after which `fancontrol` or similar tools work as
+usual. Don't use `fix_pwm_polarity=1`, which switches to active high polarity and so inverts fan
+control on these devices. And only use `force_pwm=1` if you get that message: it always sets
+active low polarity, so on a device whose firmware chose active high it would invert fan control.
+(`asustor-it87` didn't check the PWM settings at all, so it needed no parameter for this.)
+
+Tested on an AS6704T: with `force_pwm=1`, `pwm1` = 255, 153 and 100 give 2606, 1785 and 1271 RPM.
 
 ### Override detection of ASUSTOR device by `asustor` kernel module
 
@@ -403,3 +439,7 @@ DKMS installation to enable module auto-build with kernel upgrades.
 ```
 sudo make dkms
 ```
+
+This adds three DKMS packages: `asustor`, `asustor-gpio-it87` and `asustor-it87` (which builds
+`it87.ko`). If Frank Crawford's `it87` is already installed through its own DKMS package (`it87`),
+remove that first, both install a module called `it87`.
