@@ -342,6 +342,10 @@ static int temp_source[6];	/* temp1-6 */
 /* Set all limits to "no limit" at probe, see it87_reset_limits */
 static bool reset_limits;
 
+/* PWM outputs (1-6) that are not exposed, see it87_skip_pwm_mask */
+static int skip_pwm_list[6];
+static unsigned int skip_pwm_count;
+
 /* Many IT87 constants specified below */
 
 /* Length of ISA address segment */
@@ -5579,6 +5583,33 @@ static const struct attribute_group it87_group_auto_pwm = {
 };
 
 /*
+ * PWM outputs listed in the skip_pwm parameter are left out like the ones
+ * whose pins are used for something else, or like pwm2 of the boards in the
+ * DMI table whose PWM2 isn't connected to a fan: there are no pwmN or
+ * auto_point attributes, and their registers are not written (only the
+ * chip-wide settings of fix_pwm_polarity and force_pwm still apply to them).
+ * For boards with PWM outputs that aren't fans or are of unknown use, where
+ * writing them (e.g. by pwmconfig, which tries every output) could do
+ * anything. Applies to every chip the driver finds.
+ */
+static u8 __init it87_skip_pwm_mask(void)
+{
+	unsigned int i;
+	u8 mask = 0;
+
+	for (i = 0; i < skip_pwm_count; i++) {
+		int nr = skip_pwm_list[i];
+
+		if (nr < 1 || nr > ARRAY_SIZE(IT87_REG_PWM)) {
+			pr_warn("skip_pwm: no pwm%d\n", nr);
+			continue;
+		}
+		mask |= BIT(nr - 1);
+	}
+	return mask;
+}
+
+/*
  * Original explanation:
  * On various Gigabyte AM4 boards (AB350, AX370), the second Super-IO chip
  * (IT8792E) needs to be in configuration mode before accessing the first
@@ -6348,6 +6379,7 @@ static int __init it87_find(int sioaddr, unsigned short *address,
 	/* Set values based on DMI matches */
 	if (dmi_data)
 		sio_data->skip_pwm |= dmi_data->skip_pwm;
+	sio_data->skip_pwm |= it87_skip_pwm_mask();
 
 	if (config->smbus_bitmap && !base) {
 		u8 reg;
@@ -8039,6 +8071,10 @@ MODULE_PARM_DESC(temp_source,
 module_param(reset_limits, bool, 0444);
 MODULE_PARM_DESC(reset_limits,
 		 "Set all voltage, temperature and fan limits to no limit when loading (default: off)");
+
+module_param_array_named(skip_pwm, skip_pwm_list, int, &skip_pwm_count, 0444);
+MODULE_PARM_DESC(skip_pwm,
+		 "PWM outputs not to expose or touch, e.g. skip_pwm=2,4 (default: none)");
 
 MODULE_LICENSE("GPL");
 MODULE_VERSION(IT87_DRIVER_VERSION);
