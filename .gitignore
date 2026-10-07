@@ -1,6 +1,4 @@
-# Out-of-tree kernel module build artifacts (see `make modules`, or
-# truenas-asustor-deploy/components/platform-driver/deploy.sh for the
-# containerized TrueNAS SCALE build this repo is actually deployed with).
+# Out-of-tree kernel module build artifacts (see `make modules`).
 *.o
 *.ko
 *.mod
